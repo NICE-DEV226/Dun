@@ -108,7 +108,7 @@ func (m *Manager) Load(name string, manifest *Manifest, artifact []byte) error {
 
 	var mod Module = &noopModule{name: name}
 	if m.host != nil {
-		loaded, err := m.host.Load(context.Background(), artifact)
+		loaded, err := m.host.Load(context.Background(), artifact, LoadOptions{Capabilities: policy})
 		if err != nil {
 			return fmt.Errorf("load module: %w", err)
 		}
@@ -165,8 +165,8 @@ func (m *Manager) Close(ctx context.Context, name string) error {
 	return nil
 }
 
-// Invoke runs a named extension operation.
-func (m *Manager) Invoke(ctx context.Context, name, operation string, args []byte) (Result, error) {
+// Invoke runs a named extension operation with an optional per-request bridge.
+func (m *Manager) Invoke(ctx context.Context, name, operation string, args []byte, bridge HTTPBridge) (Result, error) {
 	m.mu.RLock()
 	e, ok := m.byName[name]
 	m.mu.RUnlock()
@@ -176,7 +176,7 @@ func (m *Manager) Invoke(ctx context.Context, name, operation string, args []byt
 	if e.liveness.State() != StateServing {
 		return Result{}, fmt.Errorf("extension %q not serving (state=%s)", name, e.liveness.State())
 	}
-	return e.module.Invoke(ctx, Call{Operation: operation, Args: args})
+	return e.module.Invoke(ctx, Call{Operation: operation, Args: args, Bridge: bridge})
 }
 
 // State returns the lifecycle state of a named extension.

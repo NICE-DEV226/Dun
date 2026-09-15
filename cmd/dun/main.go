@@ -11,7 +11,9 @@ import (
 	"syscall"
 
 	"github.com/NICE-DEV226/Dun/internal/config"
+	"github.com/NICE-DEV226/Dun/internal/extension"
 	dunhttp "github.com/NICE-DEV226/Dun/internal/http"
+	"github.com/NICE-DEV226/Dun/internal/runtime/wazero"
 	"github.com/NICE-DEV226/Dun/internal/version"
 )
 
@@ -39,7 +41,6 @@ func run() error {
 	if len(args) > 0 {
 		command = args[0]
 		args = args[1:]
-		// Re-parse remaining arguments for the chosen command.
 		if err := fs.Parse(args); err != nil {
 			return err
 		}
@@ -74,6 +75,24 @@ func runServer(path string) error {
 		return err
 	}
 
+	// Load plugin wasm artifacts and wire per-route pipelines.
+	if len(cfg.Plugins) > 0 {
+		rt, err := wazero.NewRuntime(logger)
+		if err != nil {
+			return fmt.Errorf("init wasm runtime: %w", err)
+		}
+		defer rt.Close(context.Background())
+
+		mgr := extension.NewManager(rt, logger)
+		for _, p := range cfg.Plugins {
+			caps := extension.NewSet(p.Capabilities...)
+			mgr.SetPolicy(p.Name, caps)
+		}
+		if err := s.LoadPlugins(ctx, mgr); err != nil {
+			return fmt.Errorf("load plugins: %w", err)
+		}
+	}
+
 	return s.ListenAndServe(ctx)
 }
 
@@ -82,7 +101,11 @@ func checkConfig(path string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("configuration OK: %d route(s), listening on %s\n", len(cfg.Routes), cfg.Listen.Address)
+	pluginInfo := ""
+	if len(cfg.Plugins) > 0 {
+		pluginInfo = fmt.Sprintf(", %d plugin(s)", len(cfg.Plugins))
+	}
+	fmt.Printf("configuration OK: %d route(s), listening on %s%s\n", len(cfg.Routes), cfg.Listen.Address, pluginInfo)
 	return nil
 }
 

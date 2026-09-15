@@ -32,7 +32,9 @@ and hackability of Go with a serious sandboxed extension model.
 
 ## Current Status
 
-Milestone 1 (Native Proxy) foundation:
+Milestones 1-3 complete: **native proxy + Wasm extension boundary proven end-to-end**.
+
+Native proxy foundations:
 
 - HTTP server
 - route matching (prefix, exact, host, method)
@@ -42,11 +44,21 @@ Milestone 1 (Native Proxy) foundation:
 - structured logging
 - request metrics
 - extension pipeline abstraction
-- capability model (two-stage enforcement scaffolding)
+- capability model (two-stage enforcement)
 - plugin lifecycle state machine
-- wazero runtime adapter skeleton
 
-Milestone 2 (Wasm runtime integration) and beyond are documented in the
+Wasm extension boundary (v0 ABI, frozen):
+
+- wazero runtime adapter with per-plugin isolated sandboxes
+- hand-assembled WebAssembly guest module builder (no external toolchain needed)
+- **security-header plugin** (wasm) loaded from disk, wired per-route
+- host function API through the `dun` module (`.capability` naming)
+- per-request instantiation with fresh module instances
+- two-stage capability enforcement: manifest-vs-policy at load, authoritative host-module denial at instantiate
+- end-to-end: client → Dun → wasm plugin → upstream (see `internal/http/server_test.go`)
+- live example artifact at `plugins/examples/security-header/security-header.wasm`
+
+Milestones 4+ are documented in the
 [architecture specification](Dun_Project_Architecture_Specification_v0_2.md).
 
 ## Quick Start
@@ -62,6 +74,16 @@ With an upstream on `:3000`:
 ```bash
 curl http://localhost:8080/hello
 ```
+
+### With the security-header Wasm plugin
+
+```bash
+go run ./cmd/dun -config examples/security-header/dun.yaml
+```
+
+Any `/api/*` request gets a `X-Security-Policy: default-src 'self'` header
+added by the WebAssembly extension — see [docs/EXTENSIONS.md](docs/EXTENSIONS.md)
+for the full v0 contract.
 
 ## Configuration
 
@@ -102,25 +124,28 @@ See:
 
 ```text
 cmd/dun                      CLI entry point
+cmd/gen-wasm                 security-header wasm artifact generator
 internal/config              configuration parsing and validation
-internal/http                HTTP server
+internal/http                HTTP server + E2E pipeline wiring
 internal/proxy               reverse proxy upstream pool
 internal/router              route matching
 internal/pipeline            extension pipeline abstraction
 internal/extension           extension host, lifecycle, capabilities, manager
+internal/guest               hand-assembled wasm module builder
 internal/runtime/wazero      wazero runtime adapter
 internal/metrics             in-process metrics
 docs                         documentation
 rfcs                         RFC documents
 examples                     example configurations
+plugins                      pre-built plugin artifacts (wasm)
 ```
 
 ## Roadmap
 
-- Milestone 1: Native Proxy (in progress)
-- Milestone 2: Wasm Runtime (wazero integration)
-- Milestone 3: Extension API (first plugin)
-- Milestone 4: Multiple Plugins
+- Milestone 1: Native Proxy (complete)
+- Milestone 2: Wasm Runtime (wazero integration) (complete)
+- Milestone 3: Extension API (first plugin) (complete)
+- Milestone 4: Multiple Plugins (complete — chained pipeline ordering)
 - Milestone 5: Isolation & Limits
 - Milestone 6: Hot Reload
 - Milestone 7: Benchmark Lab

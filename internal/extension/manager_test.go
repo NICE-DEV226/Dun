@@ -11,7 +11,7 @@ type fakeHost struct {
 	mod   Module
 }
 
-func (f *fakeHost) Load(_ context.Context, _ []byte) (Module, error) {
+func (f *fakeHost) Load(_ context.Context, _ []byte, _ LoadOptions) (Module, error) {
 	return f.mod, nil
 }
 
@@ -61,7 +61,7 @@ func TestManagerLoadAndInvoke(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	res, err := m.Invoke(context.Background(), "test", "process_request", nil)
+	res, err := m.Invoke(context.Background(), "test", "process_request", nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected invoke error: %v", err)
 	}
@@ -123,7 +123,7 @@ func TestManagerInvokeNotServing(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Not activated, so Invoke should fail.
-	_, err := m.Invoke(context.Background(), "test", "process_request", nil)
+	_, err := m.Invoke(context.Background(), "test", "process_request", nil, nil)
 	if err == nil {
 		t.Fatal("expected error for non-serving extension")
 	}

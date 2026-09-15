@@ -1,0 +1,29 @@
+# Security-header plugin example.
+# Run: dun run --config examples/security-header/dun.yaml
+# Requires the security-header.wasm artifact (committed at
+# plugins/examples/security-header/security-header.wasm.
+# Regenerate it with: go run ./cmd/gen-wasm.
+listen:
+  address: ":8081"
+
+log:
+  level: debug
+  format: text
+
+routes:
+  - name: api
+    match:
+      path_prefix: /api
+    upstream: http://localhost:3000
+    plugins:
+      - security-header
+
+plugins:
+  - name: security-header
+    path: plugins/examples/security-header/security-header.wasm
+    version: "0.1.0"
+    api: "dun.extension/v1"
+    capabilities:
+      - response.headers.write
+      - log.info
+      - log.error

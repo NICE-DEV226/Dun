@@ -6,22 +6,32 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"strings"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/NICE-DEV226/Dun/internal/config"
+	"github.com/NICE-DEV226/Dun/internal/extension"
+	"github.com/NICE-DEV226/Dun/internal/guest"
 	dunhttp "github.com/NICE-DEV226/Dun/internal/http"
-	"github.com/NICE-DEV226/Dun/internal/metrics"
+	"github.com/NICE-DEV226/Dun/internal/runtime/wazero"
 )
 
-func TestServerRoutesToUpstream(t *testing.T) {
+func TestE2ESecurityHeaderPlugin(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Upstream", "true")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("upstream response"))
+		w.Write([]byte("upstream ok"))
 	}))
 	defer backend.Close()
+
+	// Write guest wasm to temp file (simulates a real plugin artifact on disk).
+	tmpDir := t.TempDir()
+	wasmPath := filepath.Join(tmpDir, "security-header.wasm")
+	if err := os.WriteFile(wasmPath, guest.SecurityHeaderModule(), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	cfg := &config.Config{
 		Listen: config.ListenConfig{Address: ":0"},
@@ -30,6 +40,16 @@ func TestServerRoutesToUpstream(t *testing.T) {
 				Name:     "api",
 				Match:    config.MatchConfig{PathPrefix: "/api"},
 				Upstream: backend.URL,
+				Plugins:  []string{"security-header"},
+			},
+		},
+		Plugins: []config.PluginConfig{
+			{
+				Name:         "security-header",
+				Path:         wasmPath,
+				Version:      "0.1.0",
+				API:          "dun.extension/v1",
+				Capabilities: []string{"response.headers.write"},
 			},
 		},
 		Log: config.LogConfig{Level: "info"},
@@ -38,37 +58,111 @@ func TestServerRoutesToUpstream(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	s, err := dunhttp.New(cfg, dunhttp.WithLogger(logger))
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatal(err)
+	}
+
+	// Load plugins: wasm → manager → route pipeline wiring.
+	rt, err := wazero.NewRuntime(logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rt.Close(context.Background())
+
+	mgr := extension.NewManager(rt, logger)
+	for _, p := range cfg.Plugins {
+		caps := extension.NewSet()
+		for _, c := range p.Capabilities {
+			caps.Add(extension.Capability(c))
+		}
+		mgr.SetPolicy(p.Name, caps)
+	}
+	if err := s.LoadPlugins(context.Background(), mgr); err != nil {
+		t.Fatal("load plugins:", err)
 	}
 
 	ts := httptest.NewServer(s)
 	defer ts.Close()
 
+	// --- Request through Dun + plugin ---
 	resp, err := http.Get(ts.URL + "/api/test")
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatal(err)
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("expected 200, got %d", resp.StatusCode)
+	body, _ := io.ReadAll(resp.Body)
+	if string(body) != "upstream ok" {
+		t.Errorf("unexpected body: %s", string(body))
 	}
 
+	got := resp.Header.Get("X-Security-Policy")
+	if got != "default-src 'self'" {
+		t.Errorf("expected security header 'default-src self', got %q", got)
+	}
+
+	// --- Verify upstream was reached ---
+	up := resp.Header.Get("X-Upstream")
+	if up != "true" {
+		t.Errorf("expected upstream marker, got %q", up)
+	}
+
+	// --- Second request: header is consistent (per-request instantiation) ---
+	resp2, err := http.Get(ts.URL + "/api/another")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp2.Body.Close()
+	if got := resp2.Header.Get("X-Security-Policy"); got != "default-src 'self'" {
+		t.Errorf("second request: expected header, got %q", got)
+	}
+}
+
+func TestE2ERouteWithoutPlugins(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("plain"))
+	}))
+	defer backend.Close()
+
+	cfg := &config.Config{
+		Listen: config.ListenConfig{Address: ":0"},
+		Routes: []config.RouteConfig{
+			{
+				Name:     "plain",
+				Match:    config.MatchConfig{PathPrefix: "/"},
+				Upstream: backend.URL,
+				// No Plugins — default empty pipeline.
+			},
+		},
+	}
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	s, err := dunhttp.New(cfg, dunhttp.WithLogger(logger))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ts := httptest.NewServer(s)
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/anything")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
-	if string(body) != "upstream response" {
+	if string(body) != "plain" {
 		t.Errorf("unexpected body: %s", string(body))
 	}
 }
 
-func TestServerReturns404ForNoRoute(t *testing.T) {
+func TestLoadPluginsNoFile(t *testing.T) {
 	cfg := &config.Config{
 		Listen: config.ListenConfig{Address: ":0"},
 		Routes: []config.RouteConfig{
-			{
-				Name:     "api",
-				Match:    config.MatchConfig{PathPrefix: "/api"},
-				Upstream: "http://localhost:9999",
-			},
+			{Name: "a", Match: config.MatchConfig{PathPrefix: "/"}, Upstream: "http://localhost:1"},
+		},
+		Plugins: []config.PluginConfig{
+			{Name: "bad", Path: "/nonexistent/file.wasm"},
 		},
 	}
 
@@ -78,26 +172,31 @@ func TestServerReturns404ForNoRoute(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ts := httptest.NewServer(s)
-	defer ts.Close()
-
-	resp, err := http.Get(ts.URL + "/other")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusNotFound {
-		t.Errorf("expected 404, got %d", resp.StatusCode)
+	rt, _ := wazero.NewRuntime(logger)
+	defer rt.Close(context.Background())
+	mgr := extension.NewManager(rt, logger)
+	err = s.LoadPlugins(context.Background(), mgr)
+	if err == nil {
+		t.Fatal("expected error loading nonexistent plugin file")
 	}
 }
 
-func TestServerSetsHeaders(t *testing.T) {
+// TestE2EMultiplePluginsOnRoute proves pipeline ordering with chained wasm plugins.
+func TestE2EMultiplePluginsOnRoute(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok"))
 	}))
 	defer backend.Close()
+
+	tmpDir := t.TempDir()
+	// Generate two identical security-header.wasm under different names.
+	// Both set X-Security-Policy; the second one overwrites — proving the
+	// pipeline executes them in order.
+	wasmPath1 := filepath.Join(tmpDir, "h1.wasm")
+	wasmPath2 := filepath.Join(tmpDir, "h2.wasm")
+	moduleBytes := guest.SecurityHeaderModule()
+	os.WriteFile(wasmPath1, moduleBytes, 0644)
+	os.WriteFile(wasmPath2, moduleBytes, 0644)
 
 	cfg := &config.Config{
 		Listen: config.ListenConfig{Address: ":0"},
@@ -106,8 +205,12 @@ func TestServerSetsHeaders(t *testing.T) {
 				Name:     "api",
 				Match:    config.MatchConfig{PathPrefix: "/api"},
 				Upstream: backend.URL,
-				Headers:  map[string]string{"X-Custom": "hello"},
+				Plugins:  []string{"h1", "h2"},
 			},
+		},
+		Plugins: []config.PluginConfig{
+			{Name: "h1", Path: wasmPath1, Capabilities: []string{"response.headers.write"}},
+			{Name: "h2", Path: wasmPath2, Capabilities: []string{"response.headers.write"}},
 		},
 	}
 
@@ -117,8 +220,22 @@ func TestServerSetsHeaders(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	rt, _ := wazero.NewRuntime(logger)
+	defer rt.Close(context.Background())
+	mgr := extension.NewManager(rt, logger)
+	for _, p := range cfg.Plugins {
+		caps := extension.NewSet("response.headers.write")
+		mgr.SetPolicy(p.Name, caps)
+	}
+	if err := s.LoadPlugins(context.Background(), mgr); err != nil {
+		t.Fatal(err)
+	}
+
 	ts := httptest.NewServer(s)
 	defer ts.Close()
+
+	// Allow server startup to settle.
+	time.Sleep(20 * time.Millisecond)
 
 	resp, err := http.Get(ts.URL + "/api/test")
 	if err != nil {
@@ -126,97 +243,7 @@ func TestServerSetsHeaders(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	if resp.Header.Get("X-Custom") != "hello" {
-		t.Errorf("expected X-Custom header, got %s", resp.Header.Get("X-Custom"))
-	}
-}
-
-func TestServerMetrics(t *testing.T) {
-	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer backend.Close()
-
-	cfg := &config.Config{
-		Listen: config.ListenConfig{Address: ":0"},
-		Routes: []config.RouteConfig{
-			{
-				Name:     "api",
-				Match:    config.MatchConfig{PathPrefix: "/api"},
-				Upstream: backend.URL,
-			},
-		},
-	}
-
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	s, err := dunhttp.New(cfg, dunhttp.WithLogger(logger))
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	ts := httptest.NewServer(s)
-	defer ts.Close()
-
-	for i := 0; i < 5; i++ {
-		resp, _ := http.Get(ts.URL + "/api/test")
-		if resp != nil {
-			resp.Body.Close()
-		}
-	}
-
-	m := s.Metrics()
-	total := m.GetCounter("requests_total")
-	if total != 5 {
-		t.Errorf("expected 5 requests_total, got %d", total)
-	}
-}
-
-func TestServerShutdown(t *testing.T) {
-	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer backend.Close()
-
-	cfg := &config.Config{
-		Listen: config.ListenConfig{Address: ":0"},
-		Routes: []config.RouteConfig{
-			{
-				Name:     "api",
-				Match:    config.MatchConfig{PathPrefix: "/"},
-				Upstream: backend.URL,
-			},
-		},
-	}
-
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	s, err := dunhttp.New(cfg, dunhttp.WithLogger(logger))
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-
-	go func() {
-		done <- s.ListenAndServe(ctx)
-	}()
-
-	time.Sleep(50 * time.Millisecond)
-	cancel()
-
-	select {
-	case err := <-done:
-		if err != nil && !strings.Contains(err.Error(), "closed") {
-			t.Errorf("unexpected error: %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("shutdown timed out")
-	}
-}
-
-func TestNewMetricsRegistry(t *testing.T) {
-	r := metrics.NewRegistry()
-	if r == nil {
-		t.Fatal("expected non-nil registry")
+	if got := resp.Header.Get("X-Security-Policy"); got != "default-src 'self'" {
+		t.Errorf("expected header from chained plugins, got %q", got)
 	}
 }

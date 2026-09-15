@@ -67,11 +67,20 @@ granted by deployment policy. Runtime denial is authoritative.
 
 ## Open Items
 
-- Exact ABI host-function signatures (Milestone 3)
 - Streaming body semantics (RFC-0004)
 - Proxy-Wasm compatibility scope (RFC-0006)
+- TinyGo/Rust SDKs (`sdk/tinygo/`, `sdk/rust/`)
+- Envoy-style filter set, instance pools, hot reloads (post v0.x)
+
+## Milestone 3 Implementation Notes
+
+The ABI v0 references in this RFC are now proven end-to-end and frozen:
+see `docs/EXTENSIONS.md` for the exact host-function table (`dun`
+module), guest exports, string-passing convention, and the committed
+security-header example artifact at `plugins/examples/security-header/`.
 
 ## References
 
 - RFC-0000 Foundation
 - Architecture specification §9, §12, §15, §18, §22
+- docs/EXTENSIONS.md (frozen v0 contract)
