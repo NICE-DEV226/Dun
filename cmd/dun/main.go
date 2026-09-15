@@ -1,0 +1,104 @@
+// Command dun is the Dun HTTP data plane.
+package main
+
+import (
+	"context"
+	"flag"
+	"fmt"
+	"log/slog"
+	"os"
+	"os/signal"
+	"syscall"
+
+	"github.com/NICE-DEV226/Dun/internal/config"
+	dunhttp "github.com/NICE-DEV226/Dun/internal/http"
+	"github.com/NICE-DEV226/Dun/internal/version"
+)
+
+func main() {
+	if err := run(); err != nil {
+		fmt.Fprintf(os.Stderr, "dun: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func run() error {
+	fs := flag.NewFlagSet("dun", flag.ExitOnError)
+	cfgPath := fs.String("config", "dun.yaml", "path to configuration file")
+	fs.Usage = func() {
+		fmt.Fprintf(fs.Output(), "Usage: dun [command] [flags]\n\nCommands:\n  run       start the data plane\n  check     validate configuration\n  version   print version\n\nFlags:\n")
+		fs.PrintDefaults()
+	}
+
+	if err := fs.Parse(os.Args[1:]); err != nil {
+		return err
+	}
+
+	args := fs.Args()
+	command := "run"
+	if len(args) > 0 {
+		command = args[0]
+		args = args[1:]
+		// Re-parse remaining arguments for the chosen command.
+		if err := fs.Parse(args); err != nil {
+			return err
+		}
+	}
+
+	switch command {
+	case "run":
+		return runServer(*cfgPath)
+	case "check":
+		return checkConfig(*cfgPath)
+	case "version":
+		fmt.Println(version.String())
+		return nil
+	default:
+		return fmt.Errorf("unknown command %q", command)
+	}
+}
+
+func runServer(path string) error {
+	cfg, err := config.Load(path)
+	if err != nil {
+		return err
+	}
+
+	logger := newLogger(cfg)
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	s, err := dunhttp.New(cfg, dunhttp.WithLogger(logger))
+	if err != nil {
+		return err
+	}
+
+	return s.ListenAndServe(ctx)
+}
+
+func checkConfig(path string) error {
+	cfg, err := config.Load(path)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("configuration OK: %d route(s), listening on %s\n", len(cfg.Routes), cfg.Listen.Address)
+	return nil
+}
+
+func newLogger(cfg *config.Config) *slog.Logger {
+	level := slog.LevelInfo
+	switch cfg.Log.Level {
+	case "debug":
+		level = slog.LevelDebug
+	case "warn":
+		level = slog.LevelWarn
+	case "error":
+		level = slog.LevelError
+	}
+
+	if cfg.Log.Format == "json" {
+		return slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level}))
+	}
+	return slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: level}))
+}

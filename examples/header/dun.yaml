@@ -1,0 +1,15 @@
+# Header mutation example configuration.
+listen:
+  address: ":8081"
+
+log:
+  level: debug
+  format: text
+
+routes:
+  - name: api
+    match:
+      path_prefix: /api
+    upstream: http://localhost:3000
+    headers:
+      X-Security-Policy: "default-src 'self'"

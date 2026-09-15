@@ -1,0 +1,13 @@
+# Minimal Dun configuration: proxy /api to a local upstream.
+listen:
+  address: ":8080"
+
+log:
+  level: info
+  format: text
+
+routes:
+  - name: hello
+    match:
+      path_prefix: /hello
+    upstream: http://localhost:3000

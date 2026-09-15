@@ -1,0 +1,24 @@
+# Binaries
+/dun
+/dun.exe
+*.test
+*.out
+
+# Test coverage
+/coverage.out
+/coverage.html
+
+# Editor
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+
+# Profiles
+*.prof
+
+# Local config
+dun.local.yaml
+config.local.yaml
