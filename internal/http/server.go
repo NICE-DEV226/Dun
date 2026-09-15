@@ -16,6 +16,7 @@ import (
 	"github.com/NICE-DEV226/Dun/internal/metrics"
 	"github.com/NICE-DEV226/Dun/internal/pipeline"
 	"github.com/NICE-DEV226/Dun/internal/proxy"
+	"github.com/NICE-DEV226/Dun/internal/reload"
 	"github.com/NICE-DEV226/Dun/internal/router"
 )
 
@@ -29,6 +30,7 @@ type Server struct {
 	routePipelines map[string]*pipeline.Pipeline
 	logger         *slog.Logger
 	metrics        *metrics.Registry
+	mgr            *extension.Manager
 	mu             sync.Mutex
 }
 
@@ -93,55 +95,12 @@ func New(cfg *config.Config, opts ...Option) (*Server, error) {
 // referenced route with an HTTPExtension adapter in its pipeline.
 // It must be called after New and before ListenAndServe.
 func (s *Server) LoadPlugins(ctx context.Context, mgr *extension.Manager) error {
+	s.mgr = mgr
+
 	// Load each plugin wasm artifact.
 	for _, p := range s.cfg.Plugins {
-		if p.Path == "" {
-			s.logger.Debug("plugin has no wasm path, skipping", "name", p.Name)
-			continue
-		}
-		data, err := os.ReadFile(p.Path)
-		if err != nil {
-			return fmt.Errorf("read plugin %q: %w", p.Name, err)
-		}
-
-		manifest := &extension.Manifest{
-			Name:    p.Name,
-			Version: p.Version,
-			API:     p.API,
-		}
-		if manifest.API == "" {
-			manifest.API = "dun.extension/v1"
-		}
-		if manifest.Version == "" {
-			manifest.Version = "0.1.0"
-		}
-
-		// Parse and configure sandbox resource limits (RFC-0000 §11).
-		rl, err := extension.ParseResourceLimits(extension.Limits{
-			Memory:    p.Limits.Memory,
-			Timeout:   p.Limits.Timeout,
-			BodySize:  p.Limits.BodySize,
-			Instances: p.Limits.Instances,
-		})
-		if err != nil {
-			return fmt.Errorf("plugin %q limits: %w", p.Name, err)
-		}
-		mgr.SetLimits(p.Name, rl)
-
-		// Deployment policy = the capabilities declared in config
-		// (stage-1 validation target, RFC-0000 §10.1).
-		mgr.SetPolicy(p.Name, extension.NewSet(p.Capabilities...))
-
-		manifest.Caps.Request = filterCapPrefix(p.Capabilities, "request.")
-		manifest.Caps.Response = filterCapPrefix(p.Capabilities, "response.")
-		manifest.Caps.Context = filterCapPrefix(p.Capabilities, "context.")
-		manifest.Caps.Log = filterCapPrefix(p.Capabilities, "log.")
-
-		if err := mgr.Load(p.Name, manifest, data); err != nil {
-			return fmt.Errorf("load plugin %q: %w", p.Name, err)
-		}
-		if err := mgr.Activate(p.Name); err != nil {
-			return fmt.Errorf("activate plugin %q: %w", p.Name, err)
+		if err := s.loadOnePlugin(ctx, mgr, p); err != nil {
+			return err
 		}
 		s.logger.Info("plugin loaded", "name", p.Name, "path", p.Path)
 	}
@@ -168,6 +127,65 @@ func (s *Server) LoadPlugins(ctx context.Context, mgr *extension.Manager) error 
 	return nil
 }
 
+// loadOnePlugin reads a plugin's wasm artifact from disk and loads it
+// into the manager with the full lifecycle (DISCOVER → … → SERVING).
+func (s *Server) loadOnePlugin(ctx context.Context, mgr *extension.Manager, p config.PluginConfig) error {
+	if p.Path == "" {
+		s.logger.Debug("plugin has no wasm path, skipping", "name", p.Name)
+		return nil
+	}
+	data, err := os.ReadFile(p.Path)
+	if err != nil {
+		return fmt.Errorf("read plugin %q: %w", p.Name, err)
+	}
+
+	manifest := buildManifest(p)
+
+	// Parse and configure sandbox resource limits (RFC-0000 §11).
+	rl, err := extension.ParseResourceLimits(extension.Limits{
+		Memory:    p.Limits.Memory,
+		Timeout:   p.Limits.Timeout,
+		BodySize:  p.Limits.BodySize,
+		Instances: p.Limits.Instances,
+	})
+	if err != nil {
+		return fmt.Errorf("plugin %q limits: %w", p.Name, err)
+	}
+	mgr.SetLimits(p.Name, rl)
+
+	// Deployment policy = the capabilities declared in config
+	// (stage-1 validation target, RFC-0000 §10.1).
+	mgr.SetPolicy(p.Name, extension.NewSet(p.Capabilities...))
+
+	if err := mgr.Load(p.Name, manifest, data); err != nil {
+		return fmt.Errorf("load plugin %q: %w", p.Name, err)
+	}
+	if err := mgr.Activate(p.Name); err != nil {
+		return fmt.Errorf("activate plugin %q: %w", p.Name, err)
+	}
+	return nil
+}
+
+// buildManifest constructs a Manifest from a PluginConfig entry.
+func buildManifest(p config.PluginConfig) *extension.Manifest {
+	m := &extension.Manifest{
+		Name:    p.Name,
+		Version: p.Version,
+		API:     p.API,
+	}
+	if m.API == "" {
+		m.API = "dun.extension/v1"
+	}
+	if m.Version == "" {
+		m.Version = "0.1.0"
+	}
+	m.Caps.Request = filterCapPrefix(p.Capabilities, "request.")
+	m.Caps.Response = filterCapPrefix(p.Capabilities, "response.")
+	m.Caps.Context = filterCapPrefix(p.Capabilities, "context.")
+	m.Caps.Log = filterCapPrefix(p.Capabilities, "log.")
+	return m
+}
+
 func filterCapPrefix(caps []string, prefix string) []string {
 	var out []string
 	for _, c := range caps {
@@ -176,6 +194,76 @@ func filterCapPrefix(caps []string, prefix string) []string {
 		}
 	}
 	return out
+}
+
+// WatchPlugins starts a poll-based file watcher for all plugin wasm
+// artifacts declared in the configuration. When a file is modified, the
+// corresponding plugin is reloaded via manager.Reload (atomic activation,
+// RFC-0000 §13). The watcher stops when ctx is cancelled.
+func (s *Server) WatchPlugins(ctx context.Context, interval time.Duration) *reload.Watcher {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var paths []string
+	for _, p := range s.cfg.Plugins {
+		if p.Path != "" {
+			paths = append(paths, p.Path)
+		}
+	}
+	if len(paths) == 0 {
+		return nil
+	}
+
+	w := reload.NewWatcher(paths, interval, s.onPluginFileChanged, s.logger)
+	go w.Start(ctx)
+	return w
+}
+
+// onPluginFileChanged is the callback invoked by the watcher when a wasm
+// file changes on disk. It reads the new artifact and delegates to
+// manager.Reload for atomic activation.
+func (s *Server) onPluginFileChanged(path string) {
+	mgr := s.mgr
+	if mgr == nil {
+		s.logger.Warn("plugin changed but manager not set", "path", path)
+		return
+	}
+
+	cfg := s.pluginCfgByPath(path)
+	if cfg == nil {
+		s.logger.Warn("plugin changed but no config found for path", "path", path)
+		return
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		s.logger.Error("failed to read changed plugin", "path", path, "error", err)
+		return
+	}
+
+	manifest := buildManifest(*cfg)
+	if err := mgr.Reload(cfg.Name, data, manifest); err != nil {
+		s.logger.Error("plugin reload failed",
+			"extension", cfg.Name,
+			"path", path,
+			"error", err,
+		)
+		return
+	}
+	s.logger.Info("plugin reloaded via watcher",
+		"extension", cfg.Name,
+		"path", path,
+	)
+}
+
+// pluginCfgByPath returns the PluginConfig with the given path, or nil.
+func (s *Server) pluginCfgByPath(path string) *config.PluginConfig {
+	for i := range s.cfg.Plugins {
+		if s.cfg.Plugins[i].Path == path {
+			return &s.cfg.Plugins[i]
+		}
+	}
+	return nil
 }
 
 // ServeHTTP implements http.Handler. This is the main request entry point.

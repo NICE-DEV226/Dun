@@ -32,7 +32,7 @@ and hackability of Go with a serious sandboxed extension model.
 
 ## Current Status
 
-Milestones 1-5 complete: **native proxy + sandboxed Wasm extension model proven end-to-end**.
+Milestones 1-6 complete: **native proxy + sandboxed Wasm extension model proven end-to-end, with hot-reload lifecycle management**.
 
 Native proxy foundations:
 
@@ -67,6 +67,20 @@ Milestone 5 (Isolation & Limits) — the sandbox is operationally credible:
 - **failure handling**: traps/timeouts/cancellations/host-call/instantiation
   failures classified (FailureKind) and recorded in per-plugin telemetry —
   the manager isolates failures and keeps the core alive (RFC-0000 §14)
+
+Milestone 6 (Hot Reload) — production-style lifecycle management:
+
+- **atomic activation** (§13): a new binary is validated (capability vs
+  policy, ABI marker) and compiled while the old version keeps SERVING,
+  then swapped in a single step; failed reloads leave the previous
+  version active
+- **dependency-free file watcher** (`internal/reload`): polls plugin wasm
+  paths with no fsnotify dependency
+- **live swap without restart**: rewriting a `.wasm` on disk makes new
+  requests run the new version immediately (`dun run` enables with a 5s
+  interval); drain is trivial because instances are per-request (§15.1)
+- proven by manager-level and end-to-end tests (`TestManagerReload*`,
+  `TestE2EHotReloadFileChange`)
 
 Milestones 4+ are documented in the
 [architecture specification](Dun_Project_Architecture_Specification_v0_2.md).
@@ -157,7 +171,7 @@ plugins                      pre-built plugin artifacts (wasm)
 - Milestone 3: Extension API (first plugin) (complete)
 - Milestone 4: Multiple Plugins (complete — chained pipeline ordering)
 - Milestone 5: Isolation & Limits (complete — memory, timeouts, failure telemetry)
-- Milestone 6: Hot Reload
+- Milestone 6: Hot Reload (complete — atomic activation via file watcher)
 - Milestone 7: Benchmark Lab
 - Milestone 8: Ecosystem Research
 

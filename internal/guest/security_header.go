@@ -38,8 +38,20 @@ const SecurityHeaderDataOffset = 0
 // SecurityHeaderValueOffset is the heap offset for the header value string.
 const SecurityHeaderValueOffset = 32
 
-// SecurityHeaderModule builds the security-header guest module bytes.
+// SecurityHeaderModule builds the security-header guest module bytes:
+// it sets the constant X-Security-Policy header to "default-src 'self'".
 func SecurityHeaderModule() []byte {
+	return SecurityHeaderModuleValue(SecurityHeaderName, SecurityHeaderValue)
+}
+
+// SecurityHeaderModuleValue builds a security-header guest module that
+// calls response.headers.write with the given header name/value. Both
+// strings must fit within 32 bytes so they fit the fixed heap slots.
+// This enables hot-reload tests where v1/v2 set different values.
+func SecurityHeaderModuleValue(hdrName, hdrValue string) []byte {
+	if len(hdrName) > 32 || len(hdrValue) > 32 {
+		panic("security-header module strings exceed 32-byte heap slots")
+	}
 	w := &wasmWriter{}
 
 	// 1. Type section: two function types.
@@ -64,9 +76,9 @@ func SecurityHeaderModule() []byte {
 
 	// 6. Code section: $process body.
 	instr := i32Const(SecurityHeaderDataOffset)
-	instr = append(instr, i32Const(int32(len(SecurityHeaderName)))...)
+	instr = append(instr, i32Const(int32(len(hdrName)))...)
 	instr = append(instr, i32Const(SecurityHeaderValueOffset)...)
-	instr = append(instr, i32Const(int32(len(SecurityHeaderValue)))...)
+	instr = append(instr, i32Const(int32(len(hdrValue)))...)
 	instr = append(instr, 0x10, 0x00) // call func index 0 (the import)
 	instr = append(instr, 0x1a)       // drop
 	instr = append(instr, i32Const(0)...)
@@ -74,8 +86,8 @@ func SecurityHeaderModule() []byte {
 
 	// 7. Data section: header name and value.
 	data := vecCount(2) // two data segments
-	data = append(data, dataActive(SecurityHeaderDataOffset, []byte(SecurityHeaderName))...)
-	data = append(data, dataActive(SecurityHeaderValueOffset, []byte(SecurityHeaderValue))...)
+	data = append(data, dataActive(SecurityHeaderDataOffset, []byte(hdrName))...)
+	data = append(data, dataActive(SecurityHeaderValueOffset, []byte(hdrValue))...)
 	w.addSection(11, data)
 
 	return w.Bytes()

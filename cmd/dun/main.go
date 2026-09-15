@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/NICE-DEV226/Dun/internal/config"
 	"github.com/NICE-DEV226/Dun/internal/extension"
@@ -90,6 +91,15 @@ func runServer(path string) error {
 		}
 		if err := s.LoadPlugins(ctx, mgr); err != nil {
 			return fmt.Errorf("load plugins: %w", err)
+		}
+
+		// Hot-reload: poll wasm artifacts for changes and atomic-swap
+		// new versions (RFC-0000 §13).
+		if len(cfg.Plugins) > 0 {
+			w := s.WatchPlugins(ctx, 5*time.Second)
+			if w != nil {
+				logger.Info("plugin watcher started", "paths", w.Paths(), "interval", "5s")
+			}
 		}
 	}
 

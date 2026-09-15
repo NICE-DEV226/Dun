@@ -70,7 +70,7 @@ granted by deployment policy. Runtime denial is authoritative.
 - Streaming body semantics (RFC-0004)
 - Proxy-Wasm compatibility scope (RFC-0006)
 - TinyGo/Rust SDKs (`sdk/tinygo/`, `sdk/rust/`)
-- Envoy-style filter set, instance pools, hot reloads (post v0.x)
+- Envoy-style filter set, instance pools (post v0.x)
 
 ## Milestone 3 Implementation Notes
 
@@ -88,8 +88,22 @@ deadline, and failure classification via a `FailureKind`-carrying
 `InvocationError` recorded as per-plugin telemetry by the manager
 (§14: isolate, record, apply policy, keep core alive).
 
+## Milestone 6 Implementation Notes (Hot Reload)
+
+Hot reload follows §13 atomic activation: a reloaded binary is validated
+(stage-1 capability vs policy, ABI marker) and compiled into a fresh
+isolated runtime while the previous version keeps SERVING; only then is
+the running entry swapped under a single lock (§ manager.Reload). Because
+instances are per-request (§15.1) the old compiled module has nothing in
+flight and is drained + closed immediately after the swap. Any failure in
+the pipeline (validation, compile, swap) leaves the previous version
+active. Live triggers come from a dependency-free poll-based file watcher
+(`internal/reload`, no fsnotify) wired through `Server.WatchPlugins`;
+tests prove a changed wasm on disk becomes visible to new requests without
+restarting the core.
+
 ## References
 
 - RFC-0000 Foundation
-- Architecture specification §9, §12, §15, §18, §22
+- Architecture specification §9, §12, §13, §15, §18, §22
 - docs/EXTENSIONS.md (frozen v0 contract)

@@ -183,6 +183,89 @@ func (m *Manager) Activate(name string) error {
 	return nil
 }
 
+// Reload replaces a running plugin's binary with a new artifact using
+// atomic activation (RFC-0000 §13): the new binary is validated (policy
+// + ABI) and compiled while the old version keeps SERVING; only after the
+// new module is ready is the running entry swapped in a single operation.
+// Existing in-flight requests are unaffected — with per-request
+// instantiation (§15.1) they already hold their own module instance, so
+// the old compiled module is drained (nothing is running on it) and
+// closed right after the swap. A failed reload leaves the previous
+// version active.
+func (m *Manager) Reload(name string, newArtifact []byte, newManifest *Manifest) error {
+	m.mu.RLock()
+	e, ok := m.byName[name]
+	m.mu.RUnlock()
+	if !ok {
+		return ErrNotFound
+	}
+	if e.liveness.State() != StateServing {
+		return fmt.Errorf("extension %q not serving (state=%s), cannot reload", name, e.liveness.State())
+	}
+
+	// Stage 1: fast-fail capability validation against deployment policy.
+	declared := newManifest.All()
+	if overlap := declared.Intersection(e.policy); len(overlap) != len(declared) {
+		for c := range declared {
+			if !e.policy.Has(c) {
+				m.logger.Warn("reload capability not permitted by policy",
+					"extension", name,
+					"capability", string(c),
+				)
+			}
+		}
+		return fmt.Errorf("%w: %q reload requests capabilities outside its policy", ErrInvalidCapability, name)
+	}
+
+	// ABI marker check at VALIDATE (never skips the gate).
+	if m.host != nil {
+		if err := m.host.CheckABI(context.Background(), newArtifact); err != nil {
+			return fmt.Errorf("reload ABI validation failed: %w", err)
+		}
+	}
+
+	// Compile the new version while the old one keeps serving.
+	var next Module = &noopModule{name: name}
+	if m.host != nil {
+		loaded, err := m.host.Load(context.Background(), newArtifact, LoadOptions{
+			Capabilities: e.policy,
+			Limits:       e.limits,
+		})
+		if err != nil {
+			return fmt.Errorf("reload load module: %w", err)
+		}
+		next = &hostModule{inner: loaded, name: name}
+	}
+
+	// Atomic activation: swap pointers in one locked operation.
+	m.mu.Lock()
+	cur, ok := m.byName[name]
+	if !ok {
+		m.mu.Unlock()
+		_ = next.Close(context.Background())
+		return ErrNotFound
+	}
+	old := cur.module
+	cur.module = next
+	cur.manifest = newManifest
+	m.mu.Unlock()
+
+	// Drain: no pooled instances exist; in-flight requests are already
+	// isolated module instances (§13.1), so close the old compiled module.
+	if err := old.Close(context.Background()); err != nil {
+		m.logger.Warn("failed to close old extension after reload",
+			"extension", name,
+			"error", err,
+		)
+	}
+
+	m.logger.Info("extension reloaded",
+		"extension", name,
+		"version", newManifest.Version,
+	)
+	return nil
+}
+
 // Close closes and removes an extension.
 func (m *Manager) Close(ctx context.Context, name string) error {
 	m.mu.Lock()

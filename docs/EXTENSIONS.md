@@ -102,6 +102,30 @@ Failure classification (`FailureKind`): `trap`, `timeout`, `cancelled`,
 per-plugin telemetry for each kind (RFC-0000 §14: isolate, record, apply
 policy, keep core alive).
 
+## Hot reload (RFC-0000 §13, Milestone 6)
+
+Plugin binaries can be swapped without restarting the data plane:
+
+- `Manager.Reload(name, artifact, manifest)` performs **atomic
+  activation**: the new binary is validated (capability vs policy,
+  ABI marker) and compiled into a fresh isolated runtime while the old
+  version keeps serving, then the running entry is swapped in one step.
+  Any failure — bad artifact, rejected capability, compile error —
+  leaves the previous version active.
+- The old compiled module has nothing in flight (instances are
+  per-request, §15.1; plugin state does not survive a reload, §13.1) so
+  it is drained and closed right after the swap.
+- `Server.WatchPlugins(ctx, interval)` polls every plugin wasm path with
+  a dependency-free watcher and reloads on modification. `dun run`
+  enables it with a 5s interval; logs show `plugin reloaded`.
+- Lifecycle: an extension stays `SERVING` across a reload; reload is
+  rejected for extensions not in `SERVING`.
+
+```yaml
+# changing security-header.wasm on disk is picked up automatically;
+# new requests then run the new version's code.
+```
+
 ## Writing real plugins
 
 TinyGo: `tinygo build -o plugin.wasm -target wasm ./plugins/myplugin`

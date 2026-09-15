@@ -334,3 +334,114 @@ func TestE2EPluginTimeoutKeepCoreAlive(t *testing.T) {
 		t.Errorf("expected at least one timeout in telemetry, got %+v", stats)
 	}
 }
+
+func TestE2EHotReloadFileChange(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("upstream ok"))
+	}))
+	defer backend.Close()
+
+	v1 := "default-src 'self'"
+	v2 := "upgrade-insecure-requests"
+
+	tmpDir := t.TempDir()
+	wasmPath := filepath.Join(tmpDir, "security-header.wasm")
+	if err := os.WriteFile(wasmPath, guest.SecurityHeaderModuleValue(guest.SecurityHeaderName, v1), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &config.Config{
+		Listen: config.ListenConfig{Address: ":0"},
+		Routes: []config.RouteConfig{
+			{
+				Name:     "api",
+				Match:    config.MatchConfig{PathPrefix: "/api"},
+				Upstream: backend.URL,
+				Plugins:  []string{"security-header"},
+			},
+		},
+		Plugins: []config.PluginConfig{
+			{
+				Name:         "security-header",
+				Path:         wasmPath,
+				Version:      "0.1.0",
+				API:          "dun.extension/v1",
+				Capabilities: []string{"response.headers.write"},
+			},
+		},
+		Log: config.LogConfig{Level: "info"},
+	}
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	s, err := dunhttp.New(cfg, dunhttp.WithLogger(logger))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rt, err := wazero.NewRuntime(logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rt.Close(context.Background())
+
+	mgr := extension.NewManager(rt, logger)
+	for _, p := range cfg.Plugins {
+		caps := extension.NewSet()
+		for _, c := range p.Capabilities {
+			caps.Add(extension.Capability(c))
+		}
+		mgr.SetPolicy(p.Name, caps)
+	}
+	if err := s.LoadPlugins(context.Background(), mgr); err != nil {
+		t.Fatal("load plugins:", err)
+	}
+
+	ts := httptest.NewServer(s)
+	defer ts.Close()
+
+	getHeader := func() (string, int) {
+		resp, err := http.Get(ts.URL + "/api/test")
+		if err != nil {
+			return "", -1
+		}
+		defer resp.Body.Close()
+		io.Copy(io.Discard, resp.Body)
+		return resp.Header.Get("X-Security-Policy"), resp.StatusCode
+	}
+
+	if got, _ := getHeader(); got != v1 {
+		t.Fatalf("before reload: header = %q, want %q", got, v1)
+	}
+
+	// Watch starts a poll loop that hot-reloads on change. Must start
+	// BEFORE the file is rewritten so its initial snapshot captures v1.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	w := s.WatchPlugins(ctx, 15*time.Millisecond)
+	if w == nil {
+		t.Fatal("expected watcher for plugins")
+	}
+
+	// v2 artifact replaces v1 on disk.
+	time.Sleep(30 * time.Millisecond) // distinct mtime
+	if err := os.WriteFile(wasmPath, guest.SecurityHeaderModuleValue(guest.SecurityHeaderName, v2), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Poll until the new version is live (atomic activation, §13).
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		got, status := getHeader()
+		if got == v2 {
+			if status != http.StatusOK {
+				t.Fatalf("after reload: status = %d, want 200", status)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for reload; last header = %q, want %q", got, v2)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
