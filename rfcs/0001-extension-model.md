@@ -79,6 +79,15 @@ see `docs/EXTENSIONS.md` for the exact host-function table (`dun`
 module), guest exports, string-passing convention, and the committed
 security-header example artifact at `plugins/examples/security-header/`.
 
+## Milestone 5 Implementation Notes (Isolation & Limits)
+
+Per-plugin sandbox limits are enforced three ways (details in
+`docs/EXTENSIONS.md`): memory via `WithMemoryLimitPages` at COMPILE,
+execution timeouts via `WithCloseOnContextDone` + per-invocation context
+deadline, and failure classification via a `FailureKind`-carrying
+`InvocationError` recorded as per-plugin telemetry by the manager
+(§14: isolate, record, apply policy, keep core alive).
+
 ## References
 
 - RFC-0000 Foundation

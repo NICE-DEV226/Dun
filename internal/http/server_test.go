@@ -247,3 +247,90 @@ func TestE2EMultiplePluginsOnRoute(t *testing.T) {
 		t.Errorf("expected header from chained plugins, got %q", got)
 	}
 }
+
+// TestE2EPluginTimeoutKeepCoreAlive proves RFC-0000 §14 "keep core alive":
+// a plugin that loops forever is terminated by the execution timeout on the
+// affected route while the rest of the plane (other routes) stays up.
+func TestE2EPluginTimeoutKeepCoreAlive(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("upstream-ok"))
+	}))
+	defer backend.Close()
+
+	tmpDir := t.TempDir()
+	loopWasm := filepath.Join(tmpDir, "loop.wasm")
+	os.WriteFile(loopWasm, guest.InfiniteLoopModule(), 0644)
+
+	cfg := &config.Config{
+		Listen: config.ListenConfig{Address: ":0"},
+		Routes: []config.RouteConfig{
+			{
+				Name:     "api",
+				Match:    config.MatchConfig{PathPrefix: "/api"},
+				Upstream: backend.URL,
+				Plugins:  []string{"loop"},
+			},
+			{
+				Name:     "plain",
+				Match:    config.MatchConfig{PathPrefix: "/health"},
+				Upstream: backend.URL,
+				// No plugins.
+			},
+		},
+		Plugins: []config.PluginConfig{
+			{
+				Name: "loop",
+				Path: loopWasm,
+				Limits: config.PluginLimits{
+					Timeout: "20ms",
+				},
+			},
+		},
+	}
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	s, err := dunhttp.New(cfg, dunhttp.WithLogger(logger))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rt, _ := wazero.NewRuntime(logger)
+	defer rt.Close(context.Background())
+	mgr := extension.NewManager(rt, logger)
+	if err := s.LoadPlugins(context.Background(), mgr); err != nil {
+		t.Fatal(err)
+	}
+
+	ts := httptest.NewServer(s)
+	defer ts.Close()
+
+	// Request on the plugin route: times out → 500 (isolated failure).
+	resp1, err := http.Get(ts.URL + "/api/first")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp1.Body.Close()
+	if resp1.StatusCode != http.StatusInternalServerError {
+		t.Errorf("first request: expected 500, got %d", resp1.StatusCode)
+	}
+
+	// Request on a route without the plugin: the core is alive and serves.
+	resp2, err := http.Get(ts.URL + "/health/check")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp2.Body.Close()
+	body2, _ := io.ReadAll(resp2.Body)
+	if resp2.StatusCode != http.StatusOK {
+		t.Errorf("second request: expected 200, got %d", resp2.StatusCode)
+	}
+	if string(body2) != "upstream-ok" {
+		t.Errorf("second request body = %q, want upstream-ok", string(body2))
+	}
+
+	// Plugin telemetry recorded the timeout failure (RFC-0000 §14).
+	stats := mgr.Failures("loop")
+	if stats.ByName[extension.FailureTimeout] == 0 {
+		t.Errorf("expected at least one timeout in telemetry, got %+v", stats)
+	}
+}

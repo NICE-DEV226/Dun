@@ -2,7 +2,9 @@ package wazero
 
 import (
 	"context"
+	"errors"
 	"testing"
+	"time"
 
 	"github.com/NICE-DEV226/Dun/internal/extension"
 	"github.com/NICE-DEV226/Dun/internal/guest"
@@ -228,5 +230,149 @@ func TestLoadIsolatedPerPlugin(t *testing.T) {
 	}
 	if got := b2.headers["X-Security-Policy"]; got != b1.headers["X-Security-Policy"] {
 		t.Fatal("expected same header value from both isolated modules")
+	}
+}
+
+// failureKindOf extracts the FailureKind from an InvocationError.
+func failureKindOf(t *testing.T, err error) extension.FailureKind {
+	t.Helper()
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	var ive *extension.InvocationError
+	if !errors.As(err, &ive) {
+		t.Fatalf("expected *InvocationError, got %T: %v", err, err)
+	}
+	return ive.Kind
+}
+
+// TestInvokeTrapClassified proves a guest trap (unreachable) is surfaced as a
+// FailureTrap InvocationError and does not take the process down.
+func TestInvokeTrapClassified(t *testing.T) {
+	r, err := NewRuntime(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close(context.Background())
+
+	m, err := r.Load(context.Background(), guest.TrapModule(), extension.LoadOptions{
+		Capabilities: extension.NewSet(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Close(context.Background())
+
+	// The module validates and loads; only execution traps.
+	_, err = m.Invoke(context.Background(), extension.Call{Operation: "process_request"})
+	if err == nil {
+		t.Fatal("expected trap error")
+	}
+	if got := failureKindOf(t, err); got != extension.FailureTrap {
+		t.Errorf("expected FailureTrap, got %s", got)
+	}
+}
+
+// TestInvokeTimeout proves execution-time budget enforcement: an infinite
+// loop is terminated by the sandbox after ExecutionTimeout, surfaced as
+// FailureTimeout.
+func TestInvokeTimeout(t *testing.T) {
+	r, err := NewRuntime(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close(context.Background())
+
+	m, err := r.Load(context.Background(), guest.InfiniteLoopModule(), extension.LoadOptions{
+		Capabilities: extension.NewSet(),
+		Limits: extension.ResourceLimits{
+			ExecutionTimeout: 50 * time.Millisecond,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Close(context.Background())
+
+	start := time.Now()
+	_, err = m.Invoke(context.Background(), extension.Call{Operation: "process_request"})
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+	if got := failureKindOf(t, err); got != extension.FailureTimeout {
+		t.Errorf("expected FailureTimeout, got %s", got)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Errorf("timeout took too long: %v", elapsed)
+	}
+
+	// The module instance was closed by the runtime; the compiled module is
+	// still reusable.
+	m2, err := r.Load(context.Background(), guest.InfiniteLoopModule(), extension.LoadOptions{
+		Capabilities: extension.NewSet(),
+		Limits: extension.ResourceLimits{
+			ExecutionTimeout: 10 * time.Millisecond,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m2.Close(context.Background())
+	if _, err := m2.Invoke(context.Background(), extension.Call{Operation: "process_request"}); err == nil {
+		t.Fatal("expected second timeout error")
+	}
+}
+
+// TestMemoryLimitLoadFails proves load-time, fail-fast memory-limit
+// enforcement (RFC-0000 §11): a module declaring more initial memory than
+// the sandbox allows fails to load.
+func TestMemoryLimitLoadFails(t *testing.T) {
+	r, err := NewRuntime(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close(context.Background())
+
+	// Module declares 4 pages (256 KiB); limit is 2 pages (128 KiB).
+	got, err := r.Load(context.Background(), guest.MemoryModule(4), extension.LoadOptions{
+		Capabilities: extension.NewSet(),
+		Limits: extension.ResourceLimits{
+			MaxMemoryBytes: 128 * 1024,
+		},
+	})
+	if got != nil {
+		got.Close(context.Background())
+	}
+	if err == nil {
+		t.Fatal("expected load to fail: declared min memory exceeds sandbox limit")
+	}
+}
+
+// TestMemoryLimitWithinSucceeds proves a module that fits inside the memory
+// limit loads and runs normally.
+func TestMemoryLimitWithinSucceeds(t *testing.T) {
+	r, err := NewRuntime(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close(context.Background())
+
+	m, err := r.Load(context.Background(), guest.MemoryModule(1), extension.LoadOptions{
+		Capabilities: extension.NewSet(),
+		Limits: extension.ResourceLimits{
+			MaxMemoryBytes: 128 * 1024, // 2 pages, module needs 1
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Close(context.Background())
+
+	res, err := m.Invoke(context.Background(), extension.Call{Operation: "process_request"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Decision != "continue" {
+		t.Errorf("expected continue, got %q", res.Decision)
 	}
 }

@@ -34,6 +34,10 @@ var ErrMissingABIMarker = fmt.Errorf("missing ABI marker export %q", ABIVersionM
 // decision codes the guest returns from dun_process_request.
 const exportedProcessFn = "dun_process_request"
 
+// defaultMemoryLimitPages is the wazero default (4 GiB). Any
+// LoadOptions.MaxMemoryBytes that translates to fewer pages replaces it.
+const defaultMemoryLimitPages = 0 // 0 means "use wazero default"
+
 type bridgeKey struct{}
 
 // Runtime is a wazero-backed extension.Host.
@@ -54,6 +58,19 @@ func NewRuntime(logger *slog.Logger) (*Runtime, error) {
 	}, nil
 }
 
+// memoryLimitPages converts a byte count to wasm page count (64 KiB per
+// page). A zero value returns 0, meaning "use wazero default".
+func memoryLimitPages(bytes uint64) uint32 {
+	if bytes == 0 {
+		return 0
+	}
+	pages := uint32(bytes / 65536)
+	if pages == 0 {
+		pages = 1 // minimum one page
+	}
+	return pages
+}
+
 // CheckABI verifies the module exports the Dun ABI marker.
 func (r *Runtime) CheckABI(ctx context.Context, artifact []byte) error {
 	compiled, err := r.rt.CompileModule(ctx, artifact)
@@ -69,13 +86,19 @@ func (r *Runtime) CheckABI(ctx context.Context, artifact []byte) error {
 
 // Load compiles a module and wraps it as an extension.Module.
 // Each Load gets an isolated runtime so the exposed host functions are
-// bound to exactly opts.Capabilities.
+// bound to exactly opts.Capabilities. Limits configure sandbox boundaries
+// on the fresh runtime and are carried into the returned module for
+// invocation-time enforcement.
 func (r *Runtime) Load(ctx context.Context, artifact []byte, opts extension.LoadOptions) (extension.Module, error) {
 	if err := guest.ValidateWasm(artifact); err != nil {
 		return nil, fmt.Errorf("load wasm: %w", err)
 	}
 
-	fresh := wazero.NewRuntime(ctx)
+	rConfig := wazero.NewRuntimeConfig().WithCloseOnContextDone(true)
+	if pages := memoryLimitPages(opts.Limits.MaxMemoryBytes); pages > 0 {
+		rConfig = rConfig.WithMemoryLimitPages(pages)
+	}
+	fresh := wazero.NewRuntimeWithConfig(ctx, rConfig)
 	cleaned := false
 	cleanup := func() {
 		if !cleaned {
@@ -112,8 +135,15 @@ func (r *Runtime) Load(ctx context.Context, artifact []byte, opts extension.Load
 	r.logger.Debug("wasm module compiled",
 		"bytes", len(artifact),
 		"capabilities", opts.Capabilities.String(),
+		"timeout", opts.Limits.ExecutionTimeout,
+		"max_memory_pages", memoryLimitPages(opts.Limits.MaxMemoryBytes),
 	)
-	return &nativeModule{runtime: fresh, compiled: compiled, logger: r.logger}, nil
+	return &nativeModule{
+		runtime:  fresh,
+		compiled: compiled,
+		logger:   r.logger,
+		limits:   opts.Limits,
+	}, nil
 }
 
 // Close releases all resources held by the runtime's ABI-check pool.
@@ -121,24 +151,72 @@ func (r *Runtime) Close(ctx context.Context) error {
 	return r.rt.Close(ctx)
 }
 
+// isTimeoutErr reports whether err stems from a context deadline exceeded.
+func isTimeoutErr(err error) bool {
+	return errors.Is(err, context.DeadlineExceeded)
+}
+
+// isCancelErr reports whether err stems from a cancelled context.
+func isCancelErr(err error) bool {
+	return errors.Is(err, context.Canceled)
+}
+
+// classifyErr wraps a function-call error into an extension.InvocationError
+// carrying a FailureKind: context timeouts map to FailureTimeout,
+// cancellations to FailureCancelled, and everything else from executing a
+// validly-instantiated guest (unreachable, OOB access, exit codes) is a
+// guest trap (FailureTrap).
+func classifyCallErr(err error) error {
+	if isTimeoutErr(err) {
+		return &extension.InvocationError{Kind: extension.FailureTimeout, Err: err}
+	}
+	if isCancelErr(err) {
+		return &extension.InvocationError{Kind: extension.FailureCancelled, Err: err}
+	}
+	return &extension.InvocationError{Kind: extension.FailureTrap, Err: err}
+}
+
+// classifyInstantiateErr wraps an instantiation error, mapping context
+// deadlines to timeouts/cancellations and everything else to a module
+// instantiation failure.
+func classifyInstantiateErr(err error) error {
+	if isTimeoutErr(err) {
+		return &extension.InvocationError{Kind: extension.FailureTimeout, Err: err}
+	}
+	if isCancelErr(err) {
+		return &extension.InvocationError{Kind: extension.FailureCancelled, Err: err}
+	}
+	return &extension.InvocationError{Kind: extension.FailureInstantiate, Err: err}
+}
+
 // nativeModule is a compiled guest module plus its dedicated runtime.
 type nativeModule struct {
 	runtime  wazero.Runtime
 	compiled wazero.CompiledModule
 	logger   *slog.Logger
+	limits   extension.ResourceLimits
 }
 
 // Invoke instantiates a fresh guest instance and runs dun_process_request.
 // The bridge is attached to ctx so host functions see the current request.
+// An execution timeout is applied when limits.ExecutionTimeout > 0; the
+// error returned is classified into an extension.InvocationError so the
+// manager can record per-kind telemetry (RFC-0000 §14).
 func (m *nativeModule) Invoke(ctx context.Context, call extension.Call) (extension.Result, error) {
 	if call.Bridge != nil {
 		ctx = context.WithValue(ctx, bridgeKey{}, call.Bridge)
 	}
 
+	if m.limits.ExecutionTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, m.limits.ExecutionTimeout)
+		defer cancel()
+	}
+
 	// Per-request instantiation from a pre-compiled module (§15.1).
 	mod, err := m.runtime.InstantiateModule(ctx, m.compiled, wazero.NewModuleConfig())
 	if err != nil {
-		return extension.Result{}, fmt.Errorf("instantiate module: %w", err)
+		return extension.Result{}, classifyInstantiateErr(err)
 	}
 	defer func() {
 		if err := mod.Close(ctx); err != nil {
@@ -148,15 +226,21 @@ func (m *nativeModule) Invoke(ctx context.Context, call extension.Call) (extensi
 
 	fn := mod.ExportedFunction(exportedProcessFn)
 	if fn == nil {
-		return extension.Result{}, fmt.Errorf("module does not export %q", exportedProcessFn)
+		return extension.Result{}, &extension.InvocationError{
+			Kind: extension.FailureInstantiate,
+			Err:  fmt.Errorf("module does not export %q", exportedProcessFn),
+		}
 	}
 
 	results, err := fn.Call(ctx)
 	if err != nil {
-		return extension.Result{}, fmt.Errorf("invoke %q: %w", exportedProcessFn, err)
+		return extension.Result{}, classifyCallErr(err)
 	}
 	if len(results) != 1 {
-		return extension.Result{}, fmt.Errorf("invoke returned %d results, want 1", len(results))
+		return extension.Result{}, &extension.InvocationError{
+			Kind: extension.FailureInstantiate,
+			Err:  fmt.Errorf("invoke returned %d results, want 1", len(results)),
+		}
 	}
 
 	code := uint32(results[0])

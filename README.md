@@ -32,7 +32,7 @@ and hackability of Go with a serious sandboxed extension model.
 
 ## Current Status
 
-Milestones 1-3 complete: **native proxy + Wasm extension boundary proven end-to-end**.
+Milestones 1-5 complete: **native proxy + sandboxed Wasm extension model proven end-to-end**.
 
 Native proxy foundations:
 
@@ -57,6 +57,16 @@ Wasm extension boundary (v0 ABI, frozen):
 - two-stage capability enforcement: manifest-vs-policy at load, authoritative host-module denial at instantiate
 - end-to-end: client → Dun → wasm plugin → upstream (see `internal/http/server_test.go`)
 - live example artifact at `plugins/examples/security-header/security-header.wasm`
+
+Milestone 5 (Isolation & Limits) — the sandbox is operationally credible:
+
+- **memory limits**: load-time enforcement (a module declaring more than the
+  configured max memory fails fast at COMPILE, RFC-0000 §11)
+- **execution timeouts**: per-request budget via context deadline;
+  runaway guests are terminated, the request gets a 500, the core keeps serving
+- **failure handling**: traps/timeouts/cancellations/host-call/instantiation
+  failures classified (FailureKind) and recorded in per-plugin telemetry —
+  the manager isolates failures and keeps the core alive (RFC-0000 §14)
 
 Milestones 4+ are documented in the
 [architecture specification](Dun_Project_Architecture_Specification_v0_2.md).
@@ -146,7 +156,7 @@ plugins                      pre-built plugin artifacts (wasm)
 - Milestone 2: Wasm Runtime (wazero integration) (complete)
 - Milestone 3: Extension API (first plugin) (complete)
 - Milestone 4: Multiple Plugins (complete — chained pipeline ordering)
-- Milestone 5: Isolation & Limits
+- Milestone 5: Isolation & Limits (complete — memory, timeouts, failure telemetry)
 - Milestone 6: Hot Reload
 - Milestone 7: Benchmark Lab
 - Milestone 8: Ecosystem Research

@@ -115,6 +115,23 @@ func (s *Server) LoadPlugins(ctx context.Context, mgr *extension.Manager) error 
 		if manifest.Version == "" {
 			manifest.Version = "0.1.0"
 		}
+
+		// Parse and configure sandbox resource limits (RFC-0000 §11).
+		rl, err := extension.ParseResourceLimits(extension.Limits{
+			Memory:    p.Limits.Memory,
+			Timeout:   p.Limits.Timeout,
+			BodySize:  p.Limits.BodySize,
+			Instances: p.Limits.Instances,
+		})
+		if err != nil {
+			return fmt.Errorf("plugin %q limits: %w", p.Name, err)
+		}
+		mgr.SetLimits(p.Name, rl)
+
+		// Deployment policy = the capabilities declared in config
+		// (stage-1 validation target, RFC-0000 §10.1).
+		mgr.SetPolicy(p.Name, extension.NewSet(p.Capabilities...))
+
 		manifest.Caps.Request = filterCapPrefix(p.Capabilities, "request.")
 		manifest.Caps.Response = filterCapPrefix(p.Capabilities, "response.")
 		manifest.Caps.Context = filterCapPrefix(p.Capabilities, "context.")

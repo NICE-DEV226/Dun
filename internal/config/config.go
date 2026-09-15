@@ -46,11 +46,12 @@ type LogConfig struct {
 
 // PluginConfig defines a plugin entry.
 type PluginConfig struct {
-	Name         string   `yaml:"name"`
-	Path         string   `yaml:"path"`
-	Version      string   `yaml:"version"`
-	API          string   `yaml:"api"`
-	Capabilities []string `yaml:"capabilities"`
+	Name         string       `yaml:"name"`
+	Path         string       `yaml:"path"`
+	Version      string       `yaml:"version"`
+	API          string       `yaml:"api"`
+	Capabilities []string     `yaml:"capabilities"`
+	Limits       PluginLimits `yaml:"limits"`
 }
 
 // PluginLimits defines resource limits for a plugin.

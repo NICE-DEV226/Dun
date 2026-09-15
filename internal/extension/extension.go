@@ -9,6 +9,8 @@ package extension
 import (
 	"context"
 	"errors"
+	"fmt"
+	"time"
 )
 
 // ErrNotFound is returned when an extension cannot be found.
@@ -61,6 +63,24 @@ type LoadOptions struct {
 	// Capabilities is the validated policy granted to this extension.
 	// Host functions are exposed only for capabilities present here.
 	Capabilities Set
+	// Limits are the resource limits enforced at compile/instantiation/
+	// invocation time (RFC-0000 §11).
+	Limits ResourceLimits
+}
+
+// ResourceLimits describes the sandbox resource limits for a plugin
+// (RFC-0000 §11). A zero value means "no explicit limit" and leaves the
+// runtime's default in effect.
+type ResourceLimits struct {
+	// MaxMemoryBytes bounds the guest linear memory in bytes.
+	MaxMemoryBytes uint64
+	// ExecutionTimeout bounds a single invocation (trap on deadline).
+	ExecutionTimeout time.Duration
+	// MaxBodyBytes bounds the buffered body copy exposed to body-reading
+	// plugins only (RFC-0000 §11.1). Not yet enforced by host functions.
+	MaxBodyBytes uint64
+	// MaxInstances bounds concurrently running instances of this plugin.
+	MaxInstances int
 }
 
 // Extension represents a loaded extension ready to be instantiated.
@@ -100,3 +120,55 @@ type Host interface {
 	// CheckABI validates that the artifact exports a Dun ABI marker.
 	CheckABI(ctx context.Context, artifact []byte) error
 }
+
+// FailureKind classifies an extension failure (RFC-0000 §14). The
+// extension manager records telemetry keyed by these kinds so operators
+// can distinguish operational problems (timeout, instantiation failure)
+// from plugin bugs (trap) or policy violations (capability, host call).
+type FailureKind uint8
+
+const (
+	// FailureUnknown is a failure that does not match any other kind.
+	FailureUnknown FailureKind = iota
+	// FailureInstantiate is a failure to create a fresh module instance.
+	FailureInstantiate
+	// FailureTrap is a guest runtime trap (unreachable, OOB access, ...).
+	FailureTrap
+	// FailureTimeout is an invocation that exceeded execution limits.
+	FailureTimeout
+	// FailureCancelled is an invocation cancelled by the caller.
+	FailureCancelled
+	// FailureHostCall is a host-call failure (bad bridge, bad memory read).
+	FailureHostCall
+)
+
+// String returns the stable name of a failure kind.
+func (k FailureKind) String() string {
+	switch k {
+	case FailureInstantiate:
+		return "instantiate"
+	case FailureTrap:
+		return "trap"
+	case FailureTimeout:
+		return "timeout"
+	case FailureCancelled:
+		return "cancelled"
+	case FailureHostCall:
+		return "host_call"
+	default:
+		return "unknown"
+	}
+}
+
+// InvocationError is an invocation failure carrying a FailureKind so the
+// manager can record per-kind telemetry (RFC-0000 §14).
+type InvocationError struct {
+	Kind FailureKind
+	Err  error
+}
+
+func (e *InvocationError) Error() string {
+	return fmt.Sprintf("extension %s: %v", e.Kind.String(), e.Err)
+}
+
+func (e *InvocationError) Unwrap() error { return e.Err }

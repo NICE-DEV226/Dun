@@ -2,6 +2,7 @@ package extension
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -12,9 +13,11 @@ type Manager struct {
 	host     Host
 	logger   *slog.Logger
 	policies map[string]Set
+	limits   map[string]ResourceLimits
 
 	mu        sync.RWMutex
 	byName    map[string]*entry
+	telemetry map[string]*failureCounters
 	supported map[string]bool
 }
 
@@ -24,6 +27,14 @@ type entry struct {
 	module   Module
 	liveness *Liveness
 	policy   Set
+	limits   ResourceLimits
+}
+
+type failureCounters struct {
+	mu     sync.Mutex
+	byKind map[FailureKind]uint64
+	total  uint64
+	last   string
 }
 
 // NewManager creates an extension manager bound to a runtime host.
@@ -32,10 +43,12 @@ func NewManager(host Host, logger *slog.Logger) *Manager {
 		logger = slog.Default()
 	}
 	return &Manager{
-		host:     host,
-		logger:   logger,
-		policies: make(map[string]Set),
-		byName:   make(map[string]*entry),
+		host:      host,
+		logger:    logger,
+		policies:  make(map[string]Set),
+		limits:    make(map[string]ResourceLimits),
+		byName:    make(map[string]*entry),
+		telemetry: make(map[string]*failureCounters),
 		supported: map[string]bool{
 			"wasm": true,
 		},
@@ -56,6 +69,20 @@ func (m *Manager) Policy(name string) Set {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.policies[name]
+}
+
+// SetLimits configures the sandbox resource limits for a plugin name.
+func (m *Manager) SetLimits(name string, limits ResourceLimits) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.limits[name] = limits
+}
+
+// Limits returns the resource limits configured for a plugin name.
+func (m *Manager) Limits(name string) ResourceLimits {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.limits[name]
 }
 
 // Load validates and loads a plugin from manifest metadata and a raw
@@ -79,6 +106,7 @@ func (m *Manager) Load(name string, manifest *Manifest, artifact []byte) error {
 	if !ok {
 		return fmt.Errorf("%w: no policy configured for %q", ErrInvalidCapability, name)
 	}
+	limits := m.limits[name]
 	declared := manifest.All()
 	if overlap := declared.Intersection(policy); len(overlap) != len(declared) {
 		for c := range declared {
@@ -108,7 +136,10 @@ func (m *Manager) Load(name string, manifest *Manifest, artifact []byte) error {
 
 	var mod Module = &noopModule{name: name}
 	if m.host != nil {
-		loaded, err := m.host.Load(context.Background(), artifact, LoadOptions{Capabilities: policy})
+		loaded, err := m.host.Load(context.Background(), artifact, LoadOptions{
+			Capabilities: policy,
+			Limits:       limits,
+		})
 		if err != nil {
 			return fmt.Errorf("load module: %w", err)
 		}
@@ -121,6 +152,10 @@ func (m *Manager) Load(name string, manifest *Manifest, artifact []byte) error {
 		module:   mod,
 		liveness: liveness,
 		policy:   policy,
+		limits:   limits,
+	}
+	if _, ok := m.telemetry[name]; !ok {
+		m.telemetry[name] = &failureCounters{byKind: make(map[FailureKind]uint64)}
 	}
 
 	m.logger.Info("extension loaded", "extension", name, "version", manifest.Version)
@@ -166,6 +201,8 @@ func (m *Manager) Close(ctx context.Context, name string) error {
 }
 
 // Invoke runs a named extension operation with an optional per-request bridge.
+// Failures are classified into telemetry counters (RFC-0000 §14) and the
+// core is kept alive: the error is returned to the caller, never panicked.
 func (m *Manager) Invoke(ctx context.Context, name, operation string, args []byte, bridge HTTPBridge) (Result, error) {
 	m.mu.RLock()
 	e, ok := m.byName[name]
@@ -176,7 +213,75 @@ func (m *Manager) Invoke(ctx context.Context, name, operation string, args []byt
 	if e.liveness.State() != StateServing {
 		return Result{}, fmt.Errorf("extension %q not serving (state=%s)", name, e.liveness.State())
 	}
-	return e.module.Invoke(ctx, Call{Operation: operation, Args: args, Bridge: bridge})
+
+	res, err := e.module.Invoke(ctx, Call{Operation: operation, Args: args, Bridge: bridge})
+	if err == nil {
+		return res, nil
+	}
+
+	m.recordFailure(name, err)
+	return res, err
+}
+
+// recordFailure classifies an invocation error and increments the
+// per-plugin telemetry counters for it (RFC-0000 §14: isolate, record,
+// apply policy, keep core alive).
+func (m *Manager) recordFailure(name string, err error) {
+	kind := FailureUnknown
+
+	var ive *InvocationError
+	if errors.As(err, &ive) {
+		kind = ive.Kind
+	}
+
+	m.mu.RLock()
+	f := m.telemetry[name]
+	m.mu.RUnlock()
+	if f == nil {
+		f = &failureCounters{byKind: make(map[FailureKind]uint64)}
+		m.mu.Lock()
+		m.telemetry[name] = f
+		m.mu.Unlock()
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.byKind[kind]++
+	f.total++
+	f.last = err.Error()
+
+	m.logger.Warn("extension failure recorded",
+		"extension", name,
+		"kind", kind.String(),
+		"error", err.Error(),
+	)
+}
+
+// FailureStats summarizes a plugin's recorded failure telemetry.
+type FailureStats struct {
+	ByName map[FailureKind]uint64
+	Total  uint64
+	Last   string
+}
+
+// Failures returns the recorded failure telemetry for a named extension.
+func (m *Manager) Failures(name string) FailureStats {
+	m.mu.RLock()
+	f := m.telemetry[name]
+	m.mu.RUnlock()
+
+	out := FailureStats{ByName: map[FailureKind]uint64{}}
+	if f == nil {
+		return out
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out.Total = f.total
+	out.Last = f.last
+	for k, v := range f.byKind {
+		out.ByName[k] = v
+	}
+	return out
 }
 
 // State returns the lifecycle state of a named extension.

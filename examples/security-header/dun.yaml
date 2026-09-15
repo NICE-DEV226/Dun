@@ -27,3 +27,8 @@ plugins:
       - response.headers.write
       - log.info
       - log.error
+    limits:
+      memory: 64MiB
+      timeout: 5ms
+      body: 1MiB
+      instances: 8

@@ -1,8 +1,11 @@
 package extension
 
 import (
+	"fmt"
 	"os"
+	"strconv"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -95,6 +98,73 @@ func LoadManifest(path string) (*Manifest, error) {
 		return nil, err
 	}
 	return ParseManifest(data)
+}
+
+// ParseResourceLimits parses the stringy manifest/config limits into a
+// typed ResourceLimits. Empty fields leave the corresponding value zero
+// (runtime default). Sizes accept binary units (KiB, MiB, GiB) or a bare
+// integer meaning bytes.
+func ParseResourceLimits(l Limits) (ResourceLimits, error) {
+	var out ResourceLimits
+
+	if l.Memory != "" {
+		v, err := ParseSize(l.Memory)
+		if err != nil {
+			return out, fmt.Errorf("memory: %w", err)
+		}
+		out.MaxMemoryBytes = v
+	}
+	if l.Timeout != "" {
+		d, err := time.ParseDuration(l.Timeout)
+		if err != nil {
+			return out, fmt.Errorf("timeout: %w", err)
+		}
+		if d <= 0 {
+			return out, fmt.Errorf("timeout: must be positive, got %q", l.Timeout)
+		}
+		out.ExecutionTimeout = d
+	}
+	if l.BodySize != "" {
+		v, err := ParseSize(l.BodySize)
+		if err != nil {
+			return out, fmt.Errorf("body: %w", err)
+		}
+		out.MaxBodyBytes = v
+	}
+	if l.Instances < 0 {
+		return out, fmt.Errorf("instances: must be >= 0, got %d", l.Instances)
+	}
+	out.MaxInstances = l.Instances
+
+	return out, nil
+}
+
+// ParseSize parses a byte size string supporting binary units.
+// Examples: "1024", "64KiB", "1MiB", "2GiB". Unit suffixes are
+// case-insensitive. Decimal units (KB/MB/GB) are not supported; use
+// KiB/MiB/GiB for clarity.
+func ParseSize(s string) (uint64, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, fmt.Errorf("empty size")
+	}
+
+	unit := uint64(1)
+	up := strings.ToUpper(s)
+	switch {
+	case strings.HasSuffix(up, "KIB"):
+		unit, up = 1<<10, strings.TrimSuffix(up, "KIB")
+	case strings.HasSuffix(up, "MIB"):
+		unit, up = 1<<20, strings.TrimSuffix(up, "MIB")
+	case strings.HasSuffix(up, "GIB"):
+		unit, up = 1<<30, strings.TrimSuffix(up, "GIB")
+	}
+
+	n, err := strconv.ParseUint(strings.TrimSpace(up), 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid size %q", s)
+	}
+	return n * unit, nil
 }
 
 // ManifestError is a manifest validation error.
