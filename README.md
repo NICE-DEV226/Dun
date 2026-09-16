@@ -99,6 +99,24 @@ go run ./cmd/dun plugin validate -config examples/security-header/dun.yaml
 go run ./cmd/dun plugin inspect -config examples/security-header/dun.yaml
 ```
 
+## First Real Gateway
+
+The complete runnable gateway scenario is in
+[examples/gateway](examples/gateway): a Go backend on `:3000`, Dun on `:8080`,
+the security-header Wasm plugin, route-level security headers and SHA-256
+artifact verification.
+
+```bash
+go run ./examples/gateway/backend
+go run ./cmd/dun run -config examples/gateway/dun.yaml
+```
+
+In another terminal:
+
+```bash
+curl -i http://localhost:8080/api/hello
+```
+
 ## Configuration
 
 ```yaml
@@ -233,6 +251,7 @@ Important design documents:
 - [Architecture overview](docs/ARCHITECTURE.md)
 - [Extension contract](docs/EXTENSIONS.md)
 - [Changelog](CHANGELOG.md)
+- [Runnable gateway example](examples/gateway/README.md)
 - [RFCs](rfcs/)
 
 Repository areas:

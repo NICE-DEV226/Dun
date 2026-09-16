@@ -1,0 +1,36 @@
+# Dun Gateway: a runnable local API gateway example.
+# Start the backend with:
+#   go run ./examples/gateway/backend
+# Then start Dun from the repository root with:
+#   go run ./cmd/dun run -config examples/gateway/dun.yaml
+listen:
+  address: ":8080"
+
+log:
+  level: info
+  format: text
+
+routes:
+  - name: api
+    match:
+      path_prefix: /api
+    upstream: http://localhost:3000
+    plugins:
+      - security-header
+    headers:
+      X-Frame-Options: DENY
+      X-Content-Type-Options: nosniff
+
+plugins:
+  - name: security-header
+    path: plugins/examples/security-header/security-header.wasm
+    version: "0.1.0"
+    api: "dun.extension/v1"
+    sha256: 45b781fc238e5edd70555849553f5c52c109c41cb4d50e81c39f68a2dfdbe627
+    capabilities:
+      - response.headers.write
+      - log.info
+      - log.error
+    limits:
+      memory: 64MiB
+      timeout: 5ms
