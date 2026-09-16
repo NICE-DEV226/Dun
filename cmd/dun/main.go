@@ -3,11 +3,14 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -55,9 +58,59 @@ func run() error {
 	case "version":
 		fmt.Println(version.String())
 		return nil
+	case "plugin":
+		return pluginCommand(args, *cfgPath)
 	default:
 		return fmt.Errorf("unknown command %q", command)
 	}
+}
+
+func pluginCommand(args []string, path string) error {
+	if len(args) == 0 || (args[0] != "validate" && args[0] != "inspect") {
+		return fmt.Errorf("usage: dun plugin validate|inspect -config <path>")
+	}
+	pluginFlags := flag.NewFlagSet("plugin", flag.ContinueOnError)
+	configPath := pluginFlags.String("config", path, "path to configuration file")
+	if err := pluginFlags.Parse(args[1:]); err != nil {
+		return err
+	}
+
+	cfg, err := config.Load(*configPath)
+	if err != nil {
+		return err
+	}
+	if len(cfg.Plugins) == 0 {
+		fmt.Println("no plugins configured")
+		return nil
+	}
+
+	rt, err := wazero.NewRuntime(nil)
+	if err != nil {
+		return fmt.Errorf("init wasm runtime: %w", err)
+	}
+	defer rt.Close(context.Background())
+
+	for _, plugin := range cfg.Plugins {
+		data, err := os.ReadFile(plugin.Path)
+		if err != nil {
+			return fmt.Errorf("plugin %q: read %s: %w", plugin.Name, plugin.Path, err)
+		}
+		digest := sha256.Sum256(data)
+		actualDigest := hex.EncodeToString(digest[:])
+		if plugin.SHA256 != "" && !strings.EqualFold(plugin.SHA256, actualDigest) {
+			return fmt.Errorf("plugin %q: sha256 mismatch", plugin.Name)
+		}
+		if err := rt.CheckABI(context.Background(), data); err != nil {
+			return fmt.Errorf("plugin %q: ABI validation failed: %w", plugin.Name, err)
+		}
+		if args[0] == "inspect" {
+			fmt.Printf("%s\tversion=%s\tapi=%s\tsha256=%s\tcapabilities=%s\n",
+				plugin.Name, plugin.Version, plugin.API, actualDigest, strings.Join(plugin.Capabilities, ","))
+		} else {
+			fmt.Printf("plugin %q: valid (sha256=%s)\n", plugin.Name, actualDigest)
+		}
+	}
+	return nil
 }
 
 func runServer(path string) error {

@@ -323,6 +323,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		"upstream", route.Upstream,
 		"path", req.URL.Path,
 	)
+	s.metrics.Incr("route." + route.Name + ".requests_total")
 
 	// Apply route-level response headers
 	for k, v := range route.Headers {

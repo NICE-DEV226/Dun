@@ -18,4 +18,7 @@ func TestContractValues(t *testing.T) {
 	if ErrnoOK != 0 || ErrnoInvalidCall != 1 {
 		t.Fatal("errno values are not stable")
 	}
+	if !ValidateDecision(uint32(DecisionReject)) || ValidateDecision(99) {
+		t.Fatal("decision validation is not stable")
+	}
 }

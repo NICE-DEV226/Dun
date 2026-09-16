@@ -17,6 +17,12 @@ const (
 	HostModuleName = "dun"
 )
 
+// ValidateDecision reports whether a numeric guest result is defined by the
+// Core-Wasm v0 contract.
+func ValidateDecision(value uint32) bool {
+	return value <= uint32(DecisionError)
+}
+
 // Decision is the result returned by ProcessRequestExport.
 type Decision uint32
 

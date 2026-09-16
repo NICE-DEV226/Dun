@@ -95,6 +95,8 @@ Validate configuration without starting the data plane:
 ```bash
 go run ./cmd/dun check -config examples/security-header/dun.yaml
 go run ./cmd/dun version
+go run ./cmd/dun plugin validate -config examples/security-header/dun.yaml
+go run ./cmd/dun plugin inspect -config examples/security-header/dun.yaml
 ```
 
 ## Configuration
@@ -230,6 +232,7 @@ Important design documents:
 - [Architecture specification](Dun_Project_Architecture_Specification_v0_2.md)
 - [Architecture overview](docs/ARCHITECTURE.md)
 - [Extension contract](docs/EXTENSIONS.md)
+- [Changelog](CHANGELOG.md)
 - [RFCs](rfcs/)
 
 Repository areas:

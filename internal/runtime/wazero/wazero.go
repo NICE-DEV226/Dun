@@ -26,7 +26,7 @@ import (
 
 // ABI marker that every Dun plugin binary must export.
 // This mirrors the Proxy-Wasm pattern (proxy_abi_version_0_2_1).
-const ABIVersionMarker = "dun_abi_version_0_1"
+const ABIVersionMarker = publicextension.ABIMarkerExport
 
 // ErrMissingABIMarker is returned when a wasm artifact does not export the
 // Dun ABI version marker function.
@@ -113,8 +113,8 @@ func callABIMarker(ctx context.Context, runtime wazero.Runtime, compiled wazero.
 	if err != nil {
 		return fmt.Errorf("call ABI marker: %w", err)
 	}
-	if len(results) != 1 || results[0] != 1 {
-		return fmt.Errorf("invalid ABI marker value: got %v, want 1", results)
+	if len(results) != 1 || results[0] != uint64(publicextension.ABIVersion) {
+		return fmt.Errorf("invalid ABI marker value: got %v, want %d", results, publicextension.ABIVersion)
 	}
 	return nil
 }

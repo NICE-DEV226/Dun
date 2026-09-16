@@ -40,8 +40,13 @@ func TestOperationalEndpoints(t *testing.T) {
 			t.Errorf("%s status = %d, want 200", path, response.StatusCode)
 		}
 	}
+	response, err := http.Get(frontend.URL + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
 
-	response, err := http.Get(frontend.URL + "/metrics")
+	response, err = http.Get(frontend.URL + "/metrics")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,7 +55,7 @@ func TestOperationalEndpoints(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if response.StatusCode != http.StatusOK || !strings.Contains(string(body), "requests_total") {
+	if response.StatusCode != http.StatusOK || !strings.Contains(string(body), "requests_total") || !strings.Contains(string(body), "route_default_requests_total") {
 		t.Fatalf("metrics response = %d %q", response.StatusCode, body)
 	}
 }
