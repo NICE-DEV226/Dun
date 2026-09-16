@@ -1,0 +1,15 @@
+[package]
+name = "dun-extension-sdk"
+version = "0.1.0"
+edition = "2021"
+description = "Minimal Rust SDK for the Dun Core-Wasm v0 contract"
+license = "Apache-2.0"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"

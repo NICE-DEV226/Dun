@@ -91,6 +91,18 @@ func TestNoMatch(t *testing.T) {
 	}
 }
 
+func TestMatchPrefixDoesNotMatchSiblingPath(t *testing.T) {
+	r := newTestRouter(t, &config.Config{
+		Routes: []config.RouteConfig{{
+			Name: "api", Match: config.MatchConfig{PathPrefix: "/api"}, Upstream: "http://localhost:3000",
+		}},
+	})
+
+	if route := r.Match(httptest.NewRequest("GET", "/api-v2", nil)); route != nil {
+		t.Fatalf("expected no match for sibling path, got %q", route.Name)
+	}
+}
+
 func TestMultipleRoutes(t *testing.T) {
 	r := newTestRouter(t, &config.Config{
 		Routes: []config.RouteConfig{

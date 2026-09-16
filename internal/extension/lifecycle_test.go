@@ -1,6 +1,9 @@
 package extension
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
 
 func TestLifecycleFullPath(t *testing.T) {
 	l := NewLiveness()
@@ -72,7 +75,7 @@ func TestLifecycleClose(t *testing.T) {
 			t.Fatalf("transition to %s: %v", s, err)
 		}
 	}
-	if err := l.Close(nil); err != nil {
+	if err := l.Close(context.Background()); err != nil {
 		t.Fatalf("unexpected error closing: %v", err)
 	}
 	if l.State() != StateClosed {

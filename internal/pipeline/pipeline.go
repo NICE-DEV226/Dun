@@ -127,11 +127,6 @@ func (p *Pipeline) Execute(ctx context.Context, w http.ResponseWriter, req *http
 
 // ExecuteResponse runs all extensions in reverse order for the response.
 func (p *Pipeline) ExecuteResponse(ctx context.Context, w http.ResponseWriter, req *http.Request, status int) {
-	state := GetRequestState(ctx)
-	if state == nil {
-		return
-	}
-
 	for i := len(p.extensions) - 1; i >= 0; i-- {
 		p.extensions[i].ProcessResponse(ctx, w, req, status)
 	}

@@ -3,6 +3,8 @@ package wazero
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -131,6 +133,56 @@ func TestInvokeSecurityHeader(t *testing.T) {
 	}
 	if got := bridge.headers["X-Security-Policy"]; got != "default-src 'self'" {
 		t.Errorf("expected security header, got %q", got)
+	}
+}
+
+func TestInvokeConcurrentRequestsRemainIsolated(t *testing.T) {
+	r, err := NewRuntime(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close(context.Background())
+
+	m, err := r.Load(context.Background(), guest.SecurityHeaderModule(), extension.LoadOptions{
+		Capabilities: extension.NewSet(string(extension.CapResponseHeadersWrite)),
+		Limits: extension.ResourceLimits{
+			MaxInstances: 8,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Close(context.Background())
+
+	const requests = 32
+	errs := make(chan error, requests)
+	var wg sync.WaitGroup
+	for i := 0; i < requests; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			bridge := &testBridge{}
+			result, invokeErr := m.Invoke(context.Background(), extension.Call{
+				Operation: "process_request",
+				Bridge:    bridge,
+			})
+			if invokeErr != nil {
+				errs <- invokeErr
+				return
+			}
+			if result.Decision != "continue" {
+				errs <- fmt.Errorf("unexpected decision %q", result.Decision)
+				return
+			}
+			if got := bridge.headers["X-Security-Policy"]; got != "default-src 'self'" {
+				errs <- fmt.Errorf("unexpected security header %q", got)
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for invokeErr := range errs {
+		t.Error(invokeErr)
 	}
 }
 

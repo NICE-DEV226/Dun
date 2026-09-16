@@ -85,6 +85,11 @@ func runServer(path string) error {
 		defer rt.Close(context.Background())
 
 		mgr := extension.NewManager(rt, logger)
+		defer func() {
+			if err := mgr.CloseAll(context.Background()); err != nil {
+				logger.Error("failed to close plugins", "error", err)
+			}
+		}()
 		for _, p := range cfg.Plugins {
 			caps := extension.NewSet(p.Capabilities...)
 			mgr.SetPolicy(p.Name, caps)

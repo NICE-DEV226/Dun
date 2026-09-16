@@ -1,5 +1,7 @@
 package guest
 
+import publicextension "github.com/NICE-DEV226/Dun/api/extension"
+
 // SecurityHeaderModule is the hand-assembled equivalent of this WAT source:
 //
 //	(module
@@ -62,8 +64,8 @@ func SecurityHeaderModuleValue(hdrName, hdrValue string) []byte {
 	// 2. Import section: response.headers.write from module "dun" (type 1).
 	w.addSection(2, importFunc(ABIModuleName, "response.headers.write", 1))
 
-	// 3. Function section: module function $process (type 0).
-	w.addSection(3, funcSection([]uint32{0}))
+	// 3. Function section: marker and request handler (both type 0).
+	w.addSection(3, funcSection([]uint32{0, 0}))
 
 	// 4. Memory section: one page.
 	w.addSection(5, memorySection())
@@ -71,10 +73,12 @@ func SecurityHeaderModuleValue(hdrName, hdrValue string) []byte {
 	// 5. Export section: ABI marker + process handler, both func index 1.
 	w.addSection(7, exportSection([]exportEntry{
 		{name: ABIVersionMarker, funcIdx: 1},
-		{name: "dun_process_request", funcIdx: 1},
+		{name: "dun_process_request", funcIdx: 2},
 	}))
 
-	// 6. Code section: $process body.
+	// 6. Code section: the marker returns ABI version 1; the process handler
+	// writes the response header and returns CONTINUE.
+	marker := i32Const(1)
 	instr := i32Const(SecurityHeaderDataOffset)
 	instr = append(instr, i32Const(int32(len(hdrName)))...)
 	instr = append(instr, i32Const(SecurityHeaderValueOffset)...)
@@ -82,7 +86,7 @@ func SecurityHeaderModuleValue(hdrName, hdrValue string) []byte {
 	instr = append(instr, 0x10, 0x00) // call func index 0 (the import)
 	instr = append(instr, 0x1a)       // drop
 	instr = append(instr, i32Const(0)...)
-	w.addSection(10, codeSection(body(instr)))
+	w.addSection(10, codeSection(body(marker), body(instr)))
 
 	// 7. Data section: header name and value.
 	data := vecCount(2) // two data segments
@@ -108,13 +112,17 @@ func memorySection() []byte {
 	return content
 }
 
-func codeSection(entry []byte) []byte {
-	return append([]byte{0x01}, entry...)
+func codeSection(entries ...[]byte) []byte {
+	content := vecCount(len(entries))
+	for _, entry := range entries {
+		content = append(content, entry...)
+	}
+	return content
 }
 
 // ABIModuleName is the import namespace host functions live under.
-const ABIModuleName = "dun"
+const ABIModuleName = publicextension.HostModuleName
 
 // ABIVersionMarker is the exported marker function every Dun plugin binary
 // must expose (checked at VALIDATE per RFC-0000 §18.1).
-const ABIVersionMarker = "dun_abi_version_0_1"
+const ABIVersionMarker = publicextension.ABIMarkerExport

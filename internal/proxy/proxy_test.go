@@ -56,6 +56,23 @@ func TestUpstreamPoolServeHTTP(t *testing.T) {
 	}
 }
 
+func TestUpstreamPoolForwardedProto(t *testing.T) {
+	protocols := make(chan string, 1)
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		protocols <- r.Header.Get("X-Forwarded-Proto")
+	}))
+	defer backend.Close()
+
+	pool := NewUpstreamPool(nil)
+	if err := pool.Add("test", backend.URL); err != nil {
+		t.Fatal(err)
+	}
+	pool.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/", nil), "test")
+	if got := <-protocols; got != "http" {
+		t.Fatalf("expected http, got %q", got)
+	}
+}
+
 func TestUpstreamPoolServeHTTPNotFound(t *testing.T) {
 	pool := NewUpstreamPool(nil)
 

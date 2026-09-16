@@ -6,7 +6,7 @@ Thank you for your interest in contributing to Dun.
 
 ```bash
 git clone https://github.com/NICE-DEV226/Dun.git
-cd dun
+cd Dun
 go build ./cmd/dun
 go test ./...
 ```

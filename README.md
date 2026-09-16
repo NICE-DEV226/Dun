@@ -1,113 +1,101 @@
 # Dun
 
-**Go-native programmable HTTP data plane**
+<p align="center">
+  <img src="assets/logo.png" alt="Dun logo" width="720">
+</p>
 
-Dun is an open-source infrastructure project exploring WebAssembly as a
-sandboxed extension boundary for high-performance HTTP proxying.
+**A Go-native programmable HTTP data plane with a WebAssembly extension boundary.**
 
-Built in Go with a deliberately small trusted core, wazero-based
-WebAssembly execution, capability-oriented extensions, hot reload,
-reproducible benchmarks, and a long-term path toward WebAssembly
-Components.
+Dun is an experimental infrastructure project for building small, explicit
+and extensible HTTP proxies in Go. The trusted core owns routing, proxying,
+configuration and lifecycle management. Application-specific behavior runs in
+capability-scoped WebAssembly extensions hosted by [wazero](https://wazero.io/).
 
-## Why Dun
+The project is designed for engineers who want a self-contained Go binary and
+a serious sandbox boundary without turning the proxy core into an all-purpose
+platform.
 
-Reverse proxies and API gateways accumulate complexity as routing,
-authentication, policy, transformation, and platform features grow into
-the core. Dun takes the opposite direction:
+## What Dun Does
 
-- keep the native Go core small and understandable;
-- make HTTP routing and proxying first-class;
-- move application-specific behavior into isolated WebAssembly
-  extensions;
-- expose only explicit host capabilities to extensions;
-- make extension lifecycle, resource limits, failures, and performance
-  measurable;
-- preserve a single self-contained Go binary as the default deployment
-  artifact.
+```text
+client -> Dun router -> request extensions -> upstream service
+                         |
+                         +-- Wasm sandbox
+                         +-- explicit capabilities
+                         +-- limits and timeouts
+                         +-- failure telemetry
+```
 
-Dun is **not** an attempt to replace Envoy, Traefik, or Kong. Its niche
-is a programmable HTTP data plane for engineers who want the simplicity
-and hackability of Go with a serious sandboxed extension model.
+Dun currently provides:
 
-## Current Status
+- exact, prefix, host and method-based routing;
+- reverse proxying to HTTP and HTTPS upstreams;
+- ordered per-route extension pipelines;
+- Core-Wasm v0 plugins with capability-gated host imports;
+- fresh Wasm instances per request for isolation;
+- memory limits, execution timeouts and classified failures;
+- atomic plugin reload with invocation draining;
+- optional SHA-256 artifact pinning;
+- `/healthz`, `/readyz` and Prometheus-compatible `/metrics` endpoints;
+- structured logging and a dependency-free file watcher;
+- public ABI constants plus TinyGo and Rust SDK foundations.
 
-Milestones 1-6 complete: **native proxy + sandboxed Wasm extension model proven end-to-end, with hot-reload lifecycle management**.
+## Project Status
 
-Native proxy foundations:
+Dun is **pre-1.0 software**. The vertical path from HTTP request to Wasm
+extension to upstream is implemented and tested, but the ABI is still v0 and
+the project is not positioned as a replacement for Envoy, Traefik or Kong.
 
-- HTTP server
-- route matching (prefix, exact, host, method)
-- reverse proxy with upstream pool
-- YAML configuration
-- CLI (`dun run`, `dun check`, `dun version`)
-- structured logging
-- request metrics
-- extension pipeline abstraction
-- capability model (two-stage enforcement)
-- plugin lifecycle state machine
+Stable enough for experimentation:
 
-Wasm extension boundary (v0 ABI, frozen):
+- native proxy and routing;
+- Core-Wasm v0 contract;
+- capability checks at load and instantiation;
+- per-request instance isolation;
+- lifecycle, reload and shutdown behavior;
+- configuration validation and operational endpoints;
+- conformance, integration and race-detector tests.
 
-- wazero runtime adapter with per-plugin isolated sandboxes
-- hand-assembled WebAssembly guest module builder (no external toolchain needed)
-- **security-header plugin** (wasm) loaded from disk, wired per-route
-- host function API through the `dun` module (`.capability` naming)
-- per-request instantiation with fresh module instances
-- two-stage capability enforcement: manifest-vs-policy at load, authoritative host-module denial at instantiate
-- end-to-end: client → Dun → wasm plugin → upstream (see `internal/http/server_test.go`)
-- live example artifact at `plugins/examples/security-header/security-header.wasm`
+Explicitly not promised yet:
 
-Milestone 5 (Isolation & Limits) — the sandbox is operationally credible:
-
-- **memory limits**: load-time enforcement (a module declaring more than the
-  configured max memory fails fast at COMPILE, RFC-0000 §11)
-- **execution timeouts**: per-request budget via context deadline;
-  runaway guests are terminated, the request gets a 500, the core keeps serving
-- **failure handling**: traps/timeouts/cancellations/host-call/instantiation
-  failures classified (FailureKind) and recorded in per-plugin telemetry —
-  the manager isolates failures and keeps the core alive (RFC-0000 §14)
-
-Milestone 6 (Hot Reload) — production-style lifecycle management:
-
-- **atomic activation** (§13): a new binary is validated (capability vs
-  policy, ABI marker) and compiled while the old version keeps SERVING,
-  then swapped in a single step; failed reloads leave the previous
-  version active
-- **dependency-free file watcher** (`internal/reload`): polls plugin wasm
-  paths with no fsnotify dependency
-- **live swap without restart**: rewriting a `.wasm` on disk makes new
-  requests run the new version immediately (`dun run` enables with a 5s
-  interval); drain is trivial because instances are per-request (§15.1)
-- proven by manager-level and end-to-end tests (`TestManagerReload*`,
-  `TestE2EHotReloadFileChange`)
-
-Milestones 4+ are documented in the
-[architecture specification](Dun_Project_Architecture_Specification_v0_2.md).
+- pooled Wasm instances;
+- response body transformation and streaming extension APIs;
+- cryptographic plugin signatures or a remote registry;
+- a compatibility guarantee beyond Core-Wasm v0;
+- production-grade control-plane, service discovery or load balancing.
 
 ## Quick Start
+
+Requirements: Go 1.27 or newer.
 
 ```bash
 git clone https://github.com/NICE-DEV226/Dun.git
 cd Dun
-go run ./cmd/dun -config examples/hello/dun.yaml
+go run ./cmd/dun run -config examples/hello/dun.yaml
 ```
 
-With an upstream on `:3000`:
+The example expects an upstream on `localhost:3000`:
 
 ```bash
 curl http://localhost:8080/hello
 ```
 
-### With the security-header Wasm plugin
+Run the Wasm security-header example:
 
 ```bash
-go run ./cmd/dun -config examples/security-header/dun.yaml
+go run ./cmd/dun run -config examples/security-header/dun.yaml
+curl -i http://localhost:8080/api/example
 ```
 
-Any `/api/*` request gets a `X-Security-Policy: default-src 'self'` header
-added by the WebAssembly extension — see [docs/EXTENSIONS.md](docs/EXTENSIONS.md)
-for the full v0 contract.
+The plugin adds `X-Security-Policy: default-src 'self'` before the request is
+forwarded to the upstream.
+
+Validate configuration without starting the data plane:
+
+```bash
+go run ./cmd/dun check -config examples/security-header/dun.yaml
+go run ./cmd/dun version
+```
 
 ## Configuration
 
@@ -117,64 +105,175 @@ listen:
 
 log:
   level: info
-  format: text
+  format: json
 
 routes:
   - name: api
     match:
       path_prefix: /api
+      method: GET
     upstream: http://localhost:3000
+    plugins:
+      - security-header
     headers:
       X-Frame-Options: DENY
+
+plugins:
+  - name: security-header
+    path: plugins/examples/security-header/security-header.wasm
+    version: "0.1.0"
+    capabilities:
+      - response.headers.write
+    limits:
+      memory: 64MiB
+      timeout: 5ms
+    # Optional integrity pin:
+    # sha256: <64 hexadecimal characters>
 ```
 
-## CLI
+Configuration is rejected at startup when routes, upstreams, plugin
+references, methods, paths or artifact digests are invalid.
 
-```text
-dun run       start the data plane
-dun check     validate configuration
-dun version   print version
+## Extension Contract
+
+The public contract is documented in [api/extension](api/extension) and
+[docs/EXTENSIONS.md](docs/EXTENSIONS.md).
+
+Required guest exports:
+
+| Export | Signature | Contract |
+| --- | --- | --- |
+| `dun_abi_version_0_1` | `() -> i32` | returns `1` |
+| `dun_process_request` | `() -> i32` | returns a decision code |
+
+Decision codes are `0=CONTINUE`, `1=RESPOND`, `2=REJECT` and `3=ERROR`.
+
+The v0 host imports are:
+
+- `response.headers.write`
+- `log.info`
+- `log.error`
+
+Capabilities are checked against deployment policy before loading. At runtime,
+only authorized host imports are exposed to the guest. A denied import causes
+instantiation to fail rather than silently widening plugin authority.
+
+### SDKs
+
+Minimal SDK foundations are available for:
+
+- [TinyGo](sdk/tinygo/README.md)
+- [Rust](sdk/rust/README.md)
+
+The SDKs are intentionally small. They expose the ABI rather than hiding the
+host security model behind a large framework.
+
+## Operational Model
+
+Every request gets a fresh Wasm module instance in v0. This is the reference
+isolation model: guest memory and transient guest state do not survive the
+request or a reload.
+
+Configured execution limits include:
+
+- initial linear memory limit;
+- per-invocation execution timeout;
+- artifact SHA-256 verification;
+- classified trap, timeout, cancellation, host-call and instantiation errors.
+
+The server exposes:
+
+- `GET /healthz` for process liveness;
+- `GET /readyz` for readiness;
+- `GET /metrics` using Prometheus text exposition.
+
+## Verification
+
+Run the complete local checks:
+
+```bash
+go test ./...
+go test -race ./...
+go vet ./...
 ```
+
+Focused suites:
+
+```bash
+go test ./tests/conformance
+go test ./tests/integration
+go test -bench BenchmarkInvokeSecurityHeader -benchmem ./internal/runtime/wazero
+```
+
+The benchmark is a reproducible baseline, not a universal performance claim.
+On the development machine used for the current baseline it measures roughly
+`33 us/op`, `48 allocs/op` for the small security-header guest. Benchmark
+results depend on Go, wazero, CPU, operating system and build configuration.
 
 ## Architecture
 
-See:
-
-- [Architecture Specification](Dun_Project_Architecture_Specification_v0_2.md)
-- [ARCHITECTURE](docs/ARCHITECTURE.md)
-- [RFCs](rfcs/)
-
-## Repository Layout
+The trusted path is intentionally small:
 
 ```text
-cmd/dun                      CLI entry point
-cmd/gen-wasm                 security-header wasm artifact generator
-internal/config              configuration parsing and validation
-internal/http                HTTP server + E2E pipeline wiring
-internal/proxy               reverse proxy upstream pool
-internal/router              route matching
-internal/pipeline            extension pipeline abstraction
-internal/extension           extension host, lifecycle, capabilities, manager
-internal/guest               hand-assembled wasm module builder
-internal/runtime/wazero      wazero runtime adapter
-internal/metrics             in-process metrics
-docs                         documentation
-rfcs                         RFC documents
-examples                     example configurations
-plugins                      pre-built plugin artifacts (wasm)
+cmd/dun
+  -> config
+  -> http server
+       -> router
+       -> pipeline
+            -> extension manager
+                 -> runtime/wazero
+       -> proxy
 ```
 
-## Roadmap
+Important design documents:
 
-- Milestone 1: Native Proxy (complete)
-- Milestone 2: Wasm Runtime (wazero integration) (complete)
-- Milestone 3: Extension API (first plugin) (complete)
-- Milestone 4: Multiple Plugins (complete — chained pipeline ordering)
-- Milestone 5: Isolation & Limits (complete — memory, timeouts, failure telemetry)
-- Milestone 6: Hot Reload (complete — atomic activation via file watcher)
-- Milestone 7: Benchmark Lab
-- Milestone 8: Ecosystem Research
+- [Architecture specification](Dun_Project_Architecture_Specification_v0_2.md)
+- [Architecture overview](docs/ARCHITECTURE.md)
+- [Extension contract](docs/EXTENSIONS.md)
+- [RFCs](rfcs/)
+
+Repository areas:
+
+```text
+api/extension       public ABI names and values
+cmd/dun             user-facing CLI
+cmd/gen-wasm        example artifact generator
+internal/config     YAML parsing and validation
+internal/http       HTTP server and pipeline wiring
+internal/proxy      reverse proxy implementation
+internal/router     route matching
+internal/pipeline   ordered extension execution
+internal/extension  lifecycle, policy and manager
+internal/runtime    Wasm host adapter
+sdk/                TinyGo and Rust SDK foundations
+tests/conformance   ABI compatibility tests
+tests/integration   cross-package operational tests
+benchmarks/         future benchmark lab
+plugins/            example artifacts
+```
+
+## Security
+
+Wasm isolation is a defense-in-depth boundary, not a substitute for a
+complete deployment security model. Operators should pin plugin artifacts,
+run Dun with least privilege, restrict filesystem access and treat upstream
+configuration as sensitive.
+
+Report vulnerabilities privately as described in [SECURITY.md](SECURITY.md).
+
+## Contributing
+
+Start with [CONTRIBUTING.md](CONTRIBUTING.md). Architectural changes should
+be proposed as RFCs. Changes to the public ABI require compatibility tests and
+an explicit contract update.
+
+```bash
+gofmt -w .
+go test ./...
+go test -race ./...
+go vet ./...
+```
 
 ## License
 
-Apache License 2.0. See [LICENSE](LICENSE).
+Dun is licensed under the Apache License 2.0. See [LICENSE](LICENSE).

@@ -1,6 +1,9 @@
 package metrics
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestCounterIncrement(t *testing.T) {
 	r := NewRegistry()
@@ -51,5 +54,36 @@ func TestConcurrentAccess(t *testing.T) {
 
 	if got := r.GetCounter("concurrent"); got != 1000 {
 		t.Errorf("expected 1000, got %d", got)
+	}
+}
+
+func TestHistogramObservation(t *testing.T) {
+	r := NewRegistry()
+	r.Observe("request_duration_seconds", 0.25)
+	r.Observe("request_duration_seconds", 0.75)
+
+	count, sum := r.GetHistogram("request_duration_seconds")
+	if count != 2 {
+		t.Fatalf("expected 2 observations, got %d", count)
+	}
+	if sum != 1 {
+		t.Fatalf("expected sum 1, got %f", sum)
+	}
+}
+
+func TestPrometheusOutput(t *testing.T) {
+	r := NewRegistry()
+	r.Incr("requests_total")
+	r.Observe("request_duration_seconds", 0.25)
+
+	got := r.Prometheus()
+	for _, want := range []string{
+		"requests_total 1\n",
+		"request_duration_seconds_count 1\n",
+		"request_duration_seconds_sum 0.25\n",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("Prometheus output missing %q in %q", want, got)
+		}
 	}
 }

@@ -99,3 +99,25 @@ func TestLoadInvalidYAML(t *testing.T) {
 		t.Fatal("expected error for invalid YAML")
 	}
 }
+
+func TestValidateReferencedPluginNeedsPath(t *testing.T) {
+	cfg := &Config{
+		Listen:  ListenConfig{Address: ":8080"},
+		Routes:  []RouteConfig{{Name: "api", Match: MatchConfig{PathPrefix: "/api"}, Upstream: "http://localhost:3000", Plugins: []string{"auth"}}},
+		Plugins: []PluginConfig{{Name: "auth"}},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected referenced plugin without path to fail validation")
+	}
+}
+
+func TestValidatePluginSHA256(t *testing.T) {
+	cfg := &Config{
+		Listen:  ListenConfig{Address: ":8080"},
+		Routes:  []RouteConfig{{Name: "api", Match: MatchConfig{PathPrefix: "/api"}, Upstream: "http://localhost:3000"}},
+		Plugins: []PluginConfig{{Name: "auth", Path: "auth.wasm", SHA256: "not-a-digest"}},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected invalid SHA256 to fail validation")
+	}
+}

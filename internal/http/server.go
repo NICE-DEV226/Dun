@@ -2,12 +2,17 @@
 package http
 
 import (
+	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -137,6 +142,12 @@ func (s *Server) loadOnePlugin(ctx context.Context, mgr *extension.Manager, p co
 	data, err := os.ReadFile(p.Path)
 	if err != nil {
 		return fmt.Errorf("read plugin %q: %w", p.Name, err)
+	}
+	if p.SHA256 != "" {
+		digest := sha256.Sum256(data)
+		if !strings.EqualFold(p.SHA256, hex.EncodeToString(digest[:])) {
+			return fmt.Errorf("plugin %q: sha256 mismatch", p.Name)
+		}
 	}
 
 	manifest := buildManifest(p)
@@ -269,8 +280,24 @@ func (s *Server) pluginCfgByPath(path string) *config.PluginConfig {
 // ServeHTTP implements http.Handler. This is the main request entry point.
 func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	start := time.Now()
+	defer func() {
+		s.metrics.Observe("request_duration_seconds", time.Since(start).Seconds())
+	}()
 
 	s.metrics.Incr("requests_total")
+	if req.URL.Path == "/healthz" {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	if req.URL.Path == "/readyz" {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	if req.URL.Path == "/metrics" {
+		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+		_, _ = w.Write([]byte(s.metrics.Prometheus()))
+		return
+	}
 
 	route := s.router.Match(req)
 	if route == nil {
@@ -278,6 +305,17 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		http.NotFound(w, req)
 		s.metrics.Incr("requests_not_found")
 		return
+	}
+
+	pipe := s.routePipelines[route.Name]
+	if pipe == nil {
+		pipe = s.defaultPipe
+	}
+	response := &responseWriter{ResponseWriter: w}
+	if pipe != nil && pipe.Len() > 0 {
+		defer func() {
+			pipe.ExecuteResponse(req.Context(), response, req, response.statusCode())
+		}()
 	}
 
 	s.logger.Debug("route matched",
@@ -288,21 +326,17 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 	// Apply route-level response headers
 	for k, v := range route.Headers {
-		w.Header().Set(k, v)
+		response.Header().Set(k, v)
 	}
 
 	// Execute extension pipeline (per-route or default empty)
-	pipe := s.routePipelines[route.Name]
-	if pipe == nil {
-		pipe = s.defaultPipe
-	}
 	if pipe != nil && pipe.Len() > 0 {
-		decision, caller := pipe.Execute(req.Context(), w, req)
+		decision, caller := pipe.Execute(req.Context(), response, req)
 		switch decision {
 		case pipeline.DecisionReject:
 			s.logger.Warn("request rejected by extension", "extension", caller.Name())
 			s.metrics.Incr("requests_rejected")
-			http.Error(w, "forbidden", http.StatusForbidden)
+			http.Error(response, "forbidden", http.StatusForbidden)
 			return
 		case pipeline.DecisionRespond:
 			s.logger.Debug("extension handled response", "extension", caller.Name())
@@ -311,20 +345,83 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		case pipeline.DecisionError:
 			s.logger.Error("extension error", "extension", caller.Name())
 			s.metrics.Incr("extension_errors")
-			http.Error(w, "internal error", http.StatusInternalServerError)
+			http.Error(response, "internal error", http.StatusInternalServerError)
 			return
 		}
 	}
 
 	// Proxy to upstream
-	s.pool.ServeHTTP(w, req, route.Name)
+	s.pool.ServeHTTP(response, req, route.Name)
 
 	duration := time.Since(start)
-	s.metrics.Observe("request_duration_seconds", duration.Seconds())
 	s.logger.Debug("request completed",
 		"route", route.Name,
 		"duration_ms", duration.Milliseconds(),
 	)
+}
+
+type responseWriter struct {
+	http.ResponseWriter
+	status  int
+	written bool
+}
+
+func (w *responseWriter) WriteHeader(status int) {
+	if w.written {
+		return
+	}
+	w.status = status
+	w.written = true
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *responseWriter) Write(body []byte) (int, error) {
+	if !w.written {
+		w.WriteHeader(http.StatusOK)
+	}
+	return w.ResponseWriter.Write(body)
+}
+
+func (w *responseWriter) Flush() {
+	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
+		if !w.written {
+			w.WriteHeader(http.StatusOK)
+		}
+		flusher.Flush()
+	}
+}
+
+func (w *responseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	hijacker, ok := w.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, fmt.Errorf("underlying writer does not support hijacking")
+	}
+	return hijacker.Hijack()
+}
+
+func (w *responseWriter) Push(target string, options *http.PushOptions) error {
+	pusher, ok := w.ResponseWriter.(http.Pusher)
+	if !ok {
+		return http.ErrNotSupported
+	}
+	return pusher.Push(target, options)
+}
+
+func (w *responseWriter) ReadFrom(src io.Reader) (int64, error) {
+	if !w.written {
+		w.WriteHeader(http.StatusOK)
+	}
+	if reader, ok := w.ResponseWriter.(io.ReaderFrom); ok {
+		return reader.ReadFrom(src)
+	}
+	return io.Copy(w.ResponseWriter, src)
+}
+
+func (w *responseWriter) statusCode() int {
+	if w.status == 0 {
+		return http.StatusOK
+	}
+	return w.status
 }
 
 // ListenAndServe starts the HTTP server and blocks until the context is cancelled.

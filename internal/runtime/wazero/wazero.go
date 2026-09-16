@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"log/slog"
 
+	publicextension "github.com/NICE-DEV226/Dun/api/extension"
 	"github.com/NICE-DEV226/Dun/internal/extension"
 	"github.com/NICE-DEV226/Dun/internal/guest"
 	"github.com/tetratelabs/wazero"
@@ -32,7 +33,7 @@ const ABIVersionMarker = "dun_abi_version_0_1"
 var ErrMissingABIMarker = fmt.Errorf("missing ABI marker export %q", ABIVersionMarker)
 
 // decision codes the guest returns from dun_process_request.
-const exportedProcessFn = "dun_process_request"
+const exportedProcessFn = publicextension.ProcessRequestExport
 
 // defaultMemoryLimitPages is the wazero default (4 GiB). Any
 // LoadOptions.MaxMemoryBytes that translates to fewer pages replaces it.
@@ -73,13 +74,47 @@ func memoryLimitPages(bytes uint64) uint32 {
 
 // CheckABI verifies the module exports the Dun ABI marker.
 func (r *Runtime) CheckABI(ctx context.Context, artifact []byte) error {
-	compiled, err := r.rt.CompileModule(ctx, artifact)
+	checkRuntime := wazero.NewRuntime(ctx)
+	defer checkRuntime.Close(ctx)
+	if err := instantiateHostFunctions(ctx, checkRuntime, r.logger); err != nil {
+		return fmt.Errorf("instantiate ABI host module: %w", err)
+	}
+	compiled, err := checkRuntime.CompileModule(ctx, artifact)
 	if err != nil {
 		return fmt.Errorf("compile module for ABI check: %w", err)
 	}
 	defer compiled.Close(ctx)
-	if _, ok := compiled.ExportedFunctions()[ABIVersionMarker]; !ok {
+	if fn, ok := compiled.ExportedFunctions()[ABIVersionMarker]; !ok || len(fn.ResultTypes()) != 1 || fn.ResultTypes()[0] != api.ValueTypeI32 {
 		return ErrMissingABIMarker
+	}
+	return callABIMarker(ctx, checkRuntime, compiled)
+}
+
+func instantiateHostFunctions(ctx context.Context, runtime wazero.Runtime, logger *slog.Logger) error {
+	builder := runtime.NewHostModuleBuilder(guest.ABIModuleName)
+	for _, f := range hostFuncs(extension.NewSet(
+		string(extension.CapResponseHeadersWrite),
+		string(extension.CapLogInfo),
+		string(extension.CapLogError),
+	), logger) {
+		builder = builder.NewFunctionBuilder().WithFunc(f.fn).Export(f.name)
+	}
+	_, err := builder.Instantiate(ctx)
+	return err
+}
+
+func callABIMarker(ctx context.Context, runtime wazero.Runtime, compiled wazero.CompiledModule) error {
+	mod, err := runtime.InstantiateModule(ctx, compiled, wazero.NewModuleConfig())
+	if err != nil {
+		return fmt.Errorf("instantiate ABI marker module: %w", err)
+	}
+	defer mod.Close(ctx)
+	results, err := mod.ExportedFunction(ABIVersionMarker).Call(ctx)
+	if err != nil {
+		return fmt.Errorf("call ABI marker: %w", err)
+	}
+	if len(results) != 1 || results[0] != 1 {
+		return fmt.Errorf("invalid ABI marker value: got %v, want 1", results)
 	}
 	return nil
 }
@@ -213,7 +248,8 @@ func (m *nativeModule) Invoke(ctx context.Context, call extension.Call) (extensi
 		defer cancel()
 	}
 
-	// Per-request instantiation from a pre-compiled module (§15.1).
+	// Per-request instantiation is the v0 isolation guarantee. MaxInstances
+	// remains reserved for a future pool with exclusive checkout and reset.
 	mod, err := m.runtime.InstantiateModule(ctx, m.compiled, wazero.NewModuleConfig())
 	if err != nil {
 		return extension.Result{}, classifyInstantiateErr(err)
@@ -223,7 +259,6 @@ func (m *nativeModule) Invoke(ctx context.Context, call extension.Call) (extensi
 			m.logger.Warn("failed to close module instance", "error", err)
 		}
 	}()
-
 	fn := mod.ExportedFunction(exportedProcessFn)
 	if fn == nil {
 		return extension.Result{}, &extension.InvocationError{

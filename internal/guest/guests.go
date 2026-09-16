@@ -24,13 +24,13 @@ func TrapModule() []byte {
 
 	fnType0 := funcType(nil, []byte{0x7f}) // () -> i32
 	w.addSection(1, buildTypeSection([][]byte{fnType0}))
-	w.addSection(3, funcSection([]uint32{0}))
+	w.addSection(3, funcSection([]uint32{0, 0}))
 	w.addSection(5, memorySectionPages(1))
 	w.addSection(7, exportSection([]exportEntry{
 		{name: ABIVersionMarker, funcIdx: 0},
-		{name: "dun_process_request", funcIdx: 0},
+		{name: "dun_process_request", funcIdx: 1},
 	}))
-	w.addSection(10, codeSection(body([]byte{0x00}))) // unreachable
+	w.addSection(10, codeSection(body(i32Const(1)), body([]byte{0x00}))) // unreachable
 	return w.Bytes()
 }
 
@@ -56,18 +56,18 @@ func InfiniteLoopModule() []byte {
 
 	fnType0 := funcType(nil, []byte{0x7f})
 	w.addSection(1, buildTypeSection([][]byte{fnType0}))
-	w.addSection(3, funcSection([]uint32{0}))
+	w.addSection(3, funcSection([]uint32{0, 0}))
 	w.addSection(5, memorySectionPages(1))
 	w.addSection(7, exportSection([]exportEntry{
 		{name: ABIVersionMarker, funcIdx: 0},
-		{name: "dun_process_request", funcIdx: 0},
+		{name: "dun_process_request", funcIdx: 1},
 	}))
 	instr := []byte{
 		0x03, 0x7f, // loop (result i32)
 		0x0c, 0x00, // br 0
 		0x0b, // end (loop)
 	}
-	w.addSection(10, codeSection(body(instr)))
+	w.addSection(10, codeSection(body(i32Const(1)), body(instr)))
 	return w.Bytes()
 }
 
@@ -90,18 +90,18 @@ func MemoryModule(minPages uint32) []byte {
 
 	fnType0 := funcType(nil, []byte{0x7f})
 	w.addSection(1, buildTypeSection([][]byte{fnType0}))
-	w.addSection(3, funcSection([]uint32{0}))
+	w.addSection(3, funcSection([]uint32{0, 0}))
 	w.addSection(5, memorySectionPages(minPages))
 	w.addSection(7, exportSection([]exportEntry{
 		{name: ABIVersionMarker, funcIdx: 0},
-		{name: "dun_process_request", funcIdx: 0},
+		{name: "dun_process_request", funcIdx: 1},
 	}))
 
 	// A benign handler: constant-fold i32.const 0 -> CONTINUE.
 	// (Wasm has no nop; a const on the stack of a blockless function is a
 	// validation error, so we return it as the i32 result.)
 	instr := i32Const(0)
-	w.addSection(10, codeSection(body(instr)))
+	w.addSection(10, codeSection(body(i32Const(1)), body(instr)))
 	return w.Bytes()
 }
 

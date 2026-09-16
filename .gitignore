@@ -22,3 +22,6 @@
 # Local config
 dun.local.yaml
 config.local.yaml
+
+# Rust build artifacts
+sdk/rust/target/

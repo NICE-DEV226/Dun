@@ -28,6 +28,7 @@ type entry struct {
 	liveness *Liveness
 	policy   Set
 	limits   ResourceLimits
+	active   sync.RWMutex
 }
 
 type failureCounters struct {
@@ -240,10 +241,13 @@ func (m *Manager) Reload(name string, newArtifact []byte, newManifest *Manifest)
 	// Atomic activation: swap pointers in one locked operation.
 	m.mu.Lock()
 	cur, ok := m.byName[name]
-	if !ok {
+	if !ok || cur != e || cur.liveness.State() != StateServing {
 		m.mu.Unlock()
 		_ = next.Close(context.Background())
-		return ErrNotFound
+		if !ok {
+			return ErrNotFound
+		}
+		return fmt.Errorf("extension %q changed while reloading", name)
 	}
 	old := cur.module
 	cur.module = next
@@ -252,6 +256,8 @@ func (m *Manager) Reload(name string, newArtifact []byte, newManifest *Manifest)
 
 	// Drain: no pooled instances exist; in-flight requests are already
 	// isolated module instances (§13.1), so close the old compiled module.
+	e.active.Lock()
+	defer e.active.Unlock()
 	if err := old.Close(context.Background()); err != nil {
 		m.logger.Warn("failed to close old extension after reload",
 			"extension", name,
@@ -269,17 +275,39 @@ func (m *Manager) Reload(name string, newArtifact []byte, newManifest *Manifest)
 // Close closes and removes an extension.
 func (m *Manager) Close(ctx context.Context, name string) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	e, ok := m.byName[name]
 	if !ok {
+		m.mu.Unlock()
 		return ErrNotFound
 	}
-	if err := e.liveness.Close(ctx); err != nil {
-		return err
+	if e.liveness.State() == StateServing {
+		if err := e.liveness.Transition(StateDraining); err != nil {
+			m.mu.Unlock()
+			return err
+		}
 	}
 	delete(m.byName, name)
+	m.mu.Unlock()
+
+	e.active.Lock()
+	defer e.active.Unlock()
+	if err := e.module.Close(ctx); err != nil {
+		return err
+	}
+	if err := e.liveness.Transition(StateClosed); err != nil {
+		return err
+	}
 	m.logger.Info("extension removed", "extension", name)
+	return nil
+}
+
+// CloseAll drains and closes every loaded extension.
+func (m *Manager) CloseAll(ctx context.Context) error {
+	for _, name := range m.List() {
+		if err := m.Close(ctx, name); err != nil && !errors.Is(err, ErrNotFound) {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -289,10 +317,13 @@ func (m *Manager) Close(ctx context.Context, name string) error {
 func (m *Manager) Invoke(ctx context.Context, name, operation string, args []byte, bridge HTTPBridge) (Result, error) {
 	m.mu.RLock()
 	e, ok := m.byName[name]
-	m.mu.RUnlock()
 	if !ok {
+		m.mu.RUnlock()
 		return Result{}, ErrNotFound
 	}
+	e.active.RLock()
+	m.mu.RUnlock()
+	defer e.active.RUnlock()
 	if e.liveness.State() != StateServing {
 		return Result{}, fmt.Errorf("extension %q not serving (state=%s)", name, e.liveness.State())
 	}

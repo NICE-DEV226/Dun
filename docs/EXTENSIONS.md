@@ -2,6 +2,10 @@
 
 This document describes the minimal extension ABI proven end-to-end.
 
+Stable Go names and values are published in
+[`api/extension`](../api/extension). The conformance suite lives in
+`tests/conformance`.
+
 ## Guest Exports
 
 | Export                   | Signature | Meaning                          |
@@ -34,6 +38,9 @@ Guest **must export memory** (minimum 1 page = 64 KiB).
   (memory (export "memory") 1)
   (data (i32.const 0)  "X-Security-Policy")
   (data (i32.const 32) "default-src 'self'")
+  (func $marker (type 0) (result i32)
+    i32.const 1
+  )
   (func $process (type 0) (result i32)
     i32.const 0  i32.const 17
     i32.const 32 i32.const 18
@@ -41,7 +48,7 @@ Guest **must export memory** (minimum 1 page = 64 KiB).
     drop
     i32.const 0
   )
-  (export "dun_abi_version_0_1" (func $process))
+  (export "dun_abi_version_0_1" (func $marker))
   (export "dun_process_request" (func $process))
 )
 ```
@@ -66,6 +73,8 @@ plugins:
     version: "0.1.0"
     capabilities:
       - response.headers.write
+    # Optional artifact integrity pin:
+    # sha256: <64 hexadecimal characters>
 ```
 
 ## Capability enforcement (two stages)
@@ -95,7 +104,7 @@ plugins:
 | `memory`  | COMPILE (load-time)    | rejects modules declaring more initial memory than allowed (fail fast) |
 | `timeout` | INVOKE (per-request)   | terminates runaway guests via context deadline; request → 500, core stays alive |
 | `body`    | §11.1 (with body caps) | not yet enforced (no body-read capability in v0) |
-| `instances`| reserved              | not yet enforced                   |
+| `instances`| reserved              | parsed but not activated; v0 uses per-request instances |
 
 Failure classification (`FailureKind`): `trap`, `timeout`, `cancelled`,
 `host_call`, `instantiate`, `unknown`. The extension manager records
@@ -131,4 +140,6 @@ Plugin binaries can be swapped without restarting the data plane:
 TinyGo: `tinygo build -o plugin.wasm -target wasm ./plugins/myplugin`
 Rust: `cargo build --target wasm32-wasi --release`
 
-A TinyGo SDK will be provided in `sdk/tinygo/` in a future milestone.
+A TinyGo SDK and Rust SDK are future work. Until then, plugins must target
+the documented Core-Wasm ABI directly and should be tested against the Dun
+runtime fixtures before deployment.

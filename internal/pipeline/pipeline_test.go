@@ -9,11 +9,16 @@ import (
 
 type testExtension struct {
 	NoopExtension
-	decision Decision
+	decision  Decision
+	responses int
 }
 
 func (e *testExtension) ProcessRequest(_ context.Context, _ http.ResponseWriter, _ *http.Request) Decision {
 	return e.decision
+}
+
+func (e *testExtension) ProcessResponse(_ context.Context, _ http.ResponseWriter, _ *http.Request, _ int) {
+	e.responses++
 }
 
 func TestPipelineContinue(t *testing.T) {
@@ -77,6 +82,15 @@ func TestPipelineLen(t *testing.T) {
 	p := New(exts, nil)
 	if p.Len() != 2 {
 		t.Errorf("expected 2, got %d", p.Len())
+	}
+}
+
+func TestPipelineExecuteResponseWithoutRequestState(t *testing.T) {
+	ext := &testExtension{NoopExtension: NoopExtension{Name_: "response"}}
+	p := New([]Extension{ext}, nil)
+	p.ExecuteResponse(context.Background(), httptest.NewRecorder(), httptest.NewRequest("GET", "/", nil), http.StatusOK)
+	if ext.responses != 1 {
+		t.Fatalf("expected response hook once, got %d", ext.responses)
 	}
 }
 

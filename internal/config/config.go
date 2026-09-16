@@ -2,8 +2,11 @@
 package config
 
 import (
+	"encoding/hex"
 	"fmt"
+	"net/url"
 	"os"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -50,6 +53,7 @@ type PluginConfig struct {
 	Path         string       `yaml:"path"`
 	Version      string       `yaml:"version"`
 	API          string       `yaml:"api"`
+	SHA256       string       `yaml:"sha256"`
 	Capabilities []string     `yaml:"capabilities"`
 	Limits       PluginLimits `yaml:"limits"`
 }
@@ -83,7 +87,9 @@ func Load(path string) (*Config, error) {
 	}
 
 	cfg := DefaultConfig()
-	if err := yaml.Unmarshal(data, cfg); err != nil {
+	decoder := yaml.NewDecoder(strings.NewReader(string(data)))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(cfg); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
 
@@ -96,19 +102,85 @@ func Load(path string) (*Config, error) {
 
 // Validate checks the configuration for obvious errors.
 func (c *Config) Validate() error {
-	if c.Listen.Address == "" {
+	if strings.TrimSpace(c.Listen.Address) == "" {
 		return fmt.Errorf("listen.address is required")
 	}
 	if len(c.Routes) == 0 {
 		return fmt.Errorf("at least one route is required")
 	}
+	routeNames := make(map[string]struct{}, len(c.Routes))
+	pluginNames := make(map[string]struct{}, len(c.Plugins))
+	pluginPaths := make(map[string]string, len(c.Plugins))
+	for i, p := range c.Plugins {
+		name := strings.TrimSpace(p.Name)
+		if name == "" {
+			return fmt.Errorf("plugin[%d]: name is required", i)
+		}
+		if _, exists := pluginNames[name]; exists {
+			return fmt.Errorf("plugin[%d]: duplicate name %q", i, name)
+		}
+		pluginNames[name] = struct{}{}
+		pluginPaths[name] = strings.TrimSpace(p.Path)
+		if p.SHA256 != "" {
+			digest := strings.TrimSpace(p.SHA256)
+			if len(digest) != sha256HexLength || !isHexDigest(digest) {
+				return fmt.Errorf("plugin[%d]: sha256 must be a 64-character hexadecimal digest", i)
+			}
+		}
+	}
 	for i, r := range c.Routes {
+		name := strings.TrimSpace(r.Name)
+		if name == "" {
+			return fmt.Errorf("route[%d]: name is required", i)
+		}
+		if _, exists := routeNames[name]; exists {
+			return fmt.Errorf("route[%d]: duplicate name %q", i, name)
+		}
+		routeNames[name] = struct{}{}
+
+		upstream, err := url.ParseRequestURI(r.Upstream)
+		if err != nil || upstream.Scheme == "" || upstream.Host == "" || (upstream.Scheme != "http" && upstream.Scheme != "https") {
+			return fmt.Errorf("route[%d]: upstream must be an absolute http(s) URL", i)
+		}
 		if r.Upstream == "" {
 			return fmt.Errorf("route[%d]: upstream is required", i)
 		}
 		if r.Match.PathPrefix == "" && r.Match.PathExact == "" {
 			return fmt.Errorf("route[%d]: match.path_prefix or match.path_exact is required", i)
 		}
+		if r.Match.PathPrefix != "" && r.Match.PathExact != "" {
+			return fmt.Errorf("route[%d]: match.path_prefix and match.path_exact are mutually exclusive", i)
+		}
+		path := r.Match.PathPrefix
+		if path == "" {
+			path = r.Match.PathExact
+		}
+		if !strings.HasPrefix(path, "/") {
+			return fmt.Errorf("route[%d]: match path must start with '/'", i)
+		}
+		if r.Match.Method != "" && !validMethods[strings.ToUpper(r.Match.Method)] {
+			return fmt.Errorf("route[%d]: unsupported HTTP method %q", i, r.Match.Method)
+		}
+		for _, plugin := range r.Plugins {
+			if _, exists := pluginNames[plugin]; !exists {
+				return fmt.Errorf("route[%d]: plugin %q is not defined", i, plugin)
+			}
+			if pluginPaths[plugin] == "" {
+				return fmt.Errorf("route[%d]: plugin %q has no wasm path", i, plugin)
+			}
+		}
 	}
 	return nil
+}
+
+var validMethods = map[string]bool{
+	"CONNECT": true, "DELETE": true, "GET": true, "HEAD": true,
+	"OPTIONS": true, "PATCH": true, "POST": true, "PUT": true, "TRACE": true,
+}
+
+const sha256HexLength = 64
+
+func isHexDigest(value string) bool {
+	_, err := hex.DecodeString(value)
+	return err == nil
 }

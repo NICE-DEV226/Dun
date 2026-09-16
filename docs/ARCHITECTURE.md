@@ -16,7 +16,7 @@ heading. It is a companion to the full
 5. **Evolution without architectural lock-in** — the extension API must
    not depend permanently on one Wasm runtime or ABI.
 
-## Current Layout (Milestone 1)
+## Current Layout (Milestones 1-6)
 
 ```text
                   ┌──────────────┐
@@ -75,8 +75,11 @@ extension returns one of:
 - `REJECT` — request denied (403)
 - `ERROR` — extension failure (500)
 
-The pipeline is currently instantiated without extensions. Milestone 2+
-wires it to the extension manager.
+The pipeline is instantiated per route and wired to the extension manager
+when a route declares plugins. Request hooks run in declaration order.
+Response hooks run in reverse order after the proxy response has been
+captured. The v0 Wasm adapter currently implements request processing and
+response-header mutation; full response-body transformation is future work.
 
 ## Extension Host
 
@@ -130,3 +133,21 @@ Two-stage enforcement (RFC-0000 §10.1):
 | Hot reload                    | Accepted  |
 
 See the full specification for the complete decision log.
+
+## v0 Boundaries
+
+Implemented and tested:
+
+- per-request Wasm instantiation and isolation;
+- ABI marker validation and capability-gated host imports;
+- execution timeout and initial memory limits;
+- atomic reload with invocation draining;
+- configuration validation, route matching, and request metrics.
+
+Reserved for a later compatibility milestone:
+
+- pooled Wasm instances (`limits.instances` is parsed but not activated);
+- body access and response-body transformation;
+- durable extension state;
+- plugin signatures and provenance;
+- external language SDKs and WebAssembly Components.

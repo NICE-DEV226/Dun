@@ -34,7 +34,7 @@ func New(cfg *config.Config) *Router {
 			Prefix:   r.Match.PathPrefix,
 			Exact:    r.Match.PathExact,
 			Host:     r.Match.Host,
-			Method:   r.Match.Method,
+			Method:   strings.ToUpper(r.Match.Method),
 			Upstream: r.Upstream,
 			Plugins:  r.Plugins,
 			Headers:  r.Headers,
@@ -66,7 +66,7 @@ func (r *Router) matches(route *Route, req *http.Request) bool {
 	if route.Exact != "" && path != route.Exact {
 		return false
 	}
-	if route.Prefix != "" && !strings.HasPrefix(path, route.Prefix) {
+	if route.Prefix != "" && !matchesPrefix(path, route.Prefix) {
 		return false
 	}
 	if route.Host != "" && req.Host != route.Host {
@@ -76,4 +76,11 @@ func (r *Router) matches(route *Route, req *http.Request) bool {
 		return false
 	}
 	return true
+}
+
+func matchesPrefix(path, prefix string) bool {
+	if prefix == "/" {
+		return strings.HasPrefix(path, "/")
+	}
+	return path == prefix || strings.HasPrefix(path, prefix+"/")
 }

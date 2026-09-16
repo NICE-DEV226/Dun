@@ -77,7 +77,11 @@ func (p *UpstreamPool) ServeHTTP(w http.ResponseWriter, req *http.Request, upstr
 	// Remove the X-Forwarded-For header if already set, let the proxy set it
 	req.Header.Del("X-Forwarded-For")
 	req.Header.Set("X-Forwarded-Host", req.Host)
-	req.Header.Set("X-Forwarded-Proto", "http")
+	protocol := "http"
+	if req.TLS != nil {
+		protocol = "https"
+	}
+	req.Header.Set("X-Forwarded-Proto", protocol)
 
 	u.Proxy.ServeHTTP(w, req)
 }
