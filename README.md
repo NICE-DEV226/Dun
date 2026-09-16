@@ -117,6 +117,20 @@ In another terminal:
 curl -i http://localhost:8080/api/hello
 ```
 
+## Project Page
+
+The static project page lives in [web](web). Preview it from the repository
+root with:
+
+```bash
+python3 -m http.server 4173
+```
+
+Then open `http://localhost:4173/web/`.
+
+The public GitHub Pages site is available at
+<https://nice-dev226.github.io/Dun/>.
+
 ## Configuration
 
 ```yaml
