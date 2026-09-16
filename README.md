@@ -1,7 +1,7 @@
 # Dun
 
 <p align="center">
-  <img src="assets/logo.png" alt="Dun logo" width="720">
+  <img src="assets/logo.jpeg" alt="Dun logo" width="720">
 </p>
 
 **A Go-native programmable HTTP data plane with a WebAssembly extension boundary.**
