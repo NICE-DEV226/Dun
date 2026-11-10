@@ -58,7 +58,8 @@ Stable enough for experimentation:
 
 Explicitly not promised yet:
 
-- pooled Wasm instances;
+- pooled Wasm instances beyond the opt-in `limits.instances` model
+  (pool-safe artifacts only, see `docs/EXTENSIONS.md`);
 - response body transformation and streaming extension APIs;
 - cryptographic plugin signatures or a remote registry;
 - a compatibility guarantee beyond Core-Wasm v0;
@@ -239,6 +240,12 @@ go test ./tests/integration
 go test -bench BenchmarkInvokeSecurityHeader -benchmem ./internal/runtime/wazero
 ```
 
+Benchmark Lab (end-to-end baseline matrix, see `docs/BENCHMARKS.md`):
+
+```bash
+go test ./benchmarks -bench . -benchmem -benchtime=2s
+```
+
 The benchmark is a reproducible baseline, not a universal performance claim.
 On the development machine used for the current baseline it measures roughly
 `33 us/op`, `48 allocs/op` for the small security-header guest. Benchmark
@@ -284,7 +291,7 @@ internal/runtime    Wasm host adapter
 sdk/                TinyGo and Rust SDK foundations
 tests/conformance   ABI compatibility tests
 tests/integration   cross-package operational tests
-benchmarks/         future benchmark lab
+benchmarks/         Benchmark Lab harness (Milestone 7)
 plugins/            example artifacts
 ```
 

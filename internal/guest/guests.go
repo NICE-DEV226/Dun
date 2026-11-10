@@ -105,6 +105,35 @@ func MemoryModule(minPages uint32) []byte {
 	return w.Bytes()
 }
 
+// GlobalModule declares one mutable i32 global. It is used to prove that
+// artifacts carrying state the public wazero API cannot reset (globals,
+// tables, element segments) are excluded from instance pooling.
+//
+//	(module
+//	  (type (func (result i32)))
+//	  (global (mut i32) (i32.const 0))
+//	  (memory (export "memory") 1)
+//	  (func $process (type 0) (result i32) i32.const 0)
+//	  (export "dun_abi_version_0_1" (func $process))
+//	  (export "dun_process_request" (func $process))
+//	)
+func GlobalModule() []byte {
+	w := &wasmWriter{}
+
+	fnType0 := funcType(nil, []byte{0x7f})
+	w.addSection(1, buildTypeSection([][]byte{fnType0}))
+	w.addSection(3, funcSection([]uint32{0, 0}))
+	w.addSection(5, memorySectionPages(1))
+	// global section: count=1, i32 (0x7f) mutable (0x01), init i32.const 0, end
+	w.addSection(6, []byte{0x01, 0x7f, 0x01, 0x41, 0x00, 0x0b})
+	w.addSection(7, exportSection([]exportEntry{
+		{name: ABIVersionMarker, funcIdx: 0},
+		{name: "dun_process_request", funcIdx: 1},
+	}))
+	w.addSection(10, codeSection(body(i32Const(1)), body(i32Const(0))))
+	return w.Bytes()
+}
+
 // memorySectionPages writes a memory section with a single memory of
 // minPages and no declared maximum.
 func memorySectionPages(minPages uint32) []byte {

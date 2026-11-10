@@ -173,6 +173,17 @@ func (r *Runtime) Load(ctx context.Context, artifact []byte, opts extension.Load
 		"timeout", opts.Limits.ExecutionTimeout,
 		"max_memory_pages", memoryLimitPages(opts.Limits.MaxMemoryBytes),
 	)
+
+	// Pooled instantiation (RFC-0000 §15.2, Milestone 7) is opt-in via
+	// limits.instances > 0 and only for pool-safe artifacts; anything else
+	// keeps the §15.1 per-request model.
+	if opts.Limits.MaxInstances > 0 && poolableArtifact(artifact) {
+		r.logger.Debug("wasm module pooled",
+			"max_instances", opts.Limits.MaxInstances,
+		)
+		return newPooledModule(fresh, compiled, r.logger, opts.Limits, opts.Limits.MaxInstances), nil
+	}
+
 	return &nativeModule{
 		runtime:  fresh,
 		compiled: compiled,

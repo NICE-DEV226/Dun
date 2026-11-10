@@ -104,7 +104,21 @@ plugins:
 | `memory`  | COMPILE (load-time)    | rejects modules declaring more initial memory than allowed (fail fast) |
 | `timeout` | INVOKE (per-request)   | terminates runaway guests via context deadline; request → 500, core stays alive |
 | `body`    | §11.1 (with body caps) | not yet enforced (no body-read capability in v0) |
-| `instances`| reserved              | parsed but not activated; v0 uses per-request instances |
+| `instances`| INVOKE (pool sizing)  | `> 0` enables pooled instantiation (§15.2) for pool-safe artifacts; `0` keeps per-request (§15.1) |
+
+### Instance pooling (§15.2)
+
+Setting `limits.instances: N` (N > 0) switches the plugin from
+per-request instantiation to a bounded pool of N recycled instances.
+Between uses, linear memory is restored from a post-instantiation
+snapshot; instances whose memory grew or that were closed by an
+interrupted call are discarded.
+
+Pooling is **only applied to pool-safe artifacts**: modules declaring
+tables, globals or element segments fall back to per-request
+instantiation, because the public wazero API cannot snapshot and reset
+that state. Benchmark evidence (`docs/BENCHMARKS.md`): pooling is
+~4–5× faster and allocates ~7× less per invocation.
 
 Failure classification (`FailureKind`): `trap`, `timeout`, `cancelled`,
 `host_call`, `instantiate`, `unknown`. The extension manager records
