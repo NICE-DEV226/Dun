@@ -3,148 +3,165 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="Dun is a Go-native programmable HTTP data plane with isolated WebAssembly extensions.">
-  <meta name="theme-color" content="#111311">
-  <title>Dun | Programmable HTTP infrastructure in Go</title>
+  <meta name="description" content="Dun — a Go-native programmable HTTP data plane with a WebAssembly extension boundary. Research project page.">
+  <title>Dun — A Go-native programmable HTTP data plane</title>
   <link rel="icon" href="assets/logo.jpeg" type="image/jpeg">
   <link rel="stylesheet" href="styles.css">
-  <script defer src="app.js"></script>
 </head>
 <body>
   <a class="skip-link" href="#main">Skip to content</a>
-  <header class="site-header">
-    <a class="brand" href="#top" aria-label="Dun home">
-      <img src="assets/logo.jpeg" alt="" width="42" height="42">
+
+  <header class="masthead">
+    <a class="brand" href="#top">
+      <img src="assets/logo.jpeg" alt="" width="34" height="34">
       <span>DUN</span>
     </a>
-    <nav class="nav" aria-label="Primary navigation">
-      <a href="#why">Why Dun</a>
-      <a href="#architecture">Architecture</a>
-      <a href="#gateway">Gateway</a>
-      <a href="https://github.com/NICE-DEV226/Dun">GitHub <span aria-hidden="true">↗</span></a>
+    <nav class="masthead-links" aria-label="Project links">
+      <a href="https://github.com/NICE-DEV226/Dun">source</a>
+      <a href="https://github.com/NICE-DEV226/Dun/blob/main/Dun_Project_Architecture_Specification_v0_2.md">specification</a>
+      <a href="https://github.com/NICE-DEV226/Dun/tree/main/rfcs">rfcs</a>
+      <a href="https://github.com/NICE-DEV226/Dun">github ↗</a>
     </nav>
-    <div class="header-actions">
-      <a class="header-link" href="https://github.com/NICE-DEV226/Dun" aria-label="Star Dun on GitHub">☆ Star</a>
-      <a class="header-action" href="https://github.com/NICE-DEV226/Dun/blob/main/CONTRIBUTING.md">Contribute <span aria-hidden="true">↗</span></a>
-    </div>
   </header>
 
-  <main id="main">
-    <section class="hero section" id="top">
-      <div class="hero-copy reveal">
-        <p class="eyebrow"><span class="status-dot"></span> Go-native infrastructure <span class="eyebrow-slash">/</span> Core-Wasm v0</p>
-        <h1>Give your gateway<br><em>a sharper edge.</em></h1>
-        <p class="hero-lede">Dun is a self-contained Go data plane for routing, proxying and policy. Application-specific behavior runs in capability-scoped WebAssembly extensions instead of expanding the trusted core.</p>
-        <div class="hero-actions">
-          <a class="button button-primary" href="#gateway">Run the gateway <span aria-hidden="true">→</span></a>
-          <a class="button button-quiet" href="https://github.com/NICE-DEV226/Dun">Read the source <span aria-hidden="true">↗</span></a>
+  <main id="main" class="paper">
+    <header class="title-block" id="top">
+      <p class="kicker">research project · systems · go · webassembly</p>
+      <h1>Dun</h1>
+      <p class="subtitle">A Go-native programmable HTTP data plane<br>with a WebAssembly extension boundary.</p>
+      <ul class="badges" aria-label="Project facts">
+        <li>go 1.27+</li>
+        <li>wazero</li>
+        <li>apache-2.0</li>
+        <li>pre-1.0</li>
+        <li>~6k loc</li>
+      </ul>
+    </header>
+
+    <div class="sheet">
+    <section class="section" id="abstract">
+      <h2><span class="sec-num">1</span>Abstract</h2>
+      <div class="prose">
+        <p>Dun explores whether a production-shaped HTTP data plane can stay small and auditable while delegating application-specific behavior to sandboxed WebAssembly extensions. The trusted core owns routing, proxying, configuration and lifecycle; extensions run under an explicit capability model with per-request isolation, resource limits and classified failure telemetry. This page summarizes the architecture, the extension contract, and measured costs — including where Wasm is, and is not, a good boundary for HTTP infrastructure.</p>
+      </div>
+    </section>
+
+    <section class="section" id="architecture">
+      <h2><span class="sec-num">2</span>Architecture</h2>
+      <div class="prose">
+        <p>Every request traverses a narrow trusted path. Plugins are consulted in order, each inside its own sandbox; decisions (<code>continue</code>, <code>respond</code>, <code>reject</code>, <code>error</code>) are explicit integers, not conventions.</p>
+      </div>
+
+      <figure class="figure">
+        <div class="pipeline">
+          <div class="p-node"><span class="p-idx">01</span><div><strong>client</strong><small>http request</small></div></div>
+          <div class="p-link"><span></span></div>
+          <div class="p-node p-dun"><span class="p-idx">02</span><div><strong>dun core</strong><small>route · policy · proxy</small></div></div>
+          <div class="p-link"><span></span></div>
+          <div class="p-node p-wasm"><span class="p-idx">03</span><div><strong>wasm extension</strong><small>capability-scoped</small></div></div>
+          <div class="p-link"><span></span></div>
+          <div class="p-node"><span class="p-idx">04</span><div><strong>upstream</strong><small>service response</small></div></div>
         </div>
-        <div class="hero-meta" aria-label="Project status">
-          <span>Apache-2.0</span>
-          <span>Go 1.27+</span>
-          <span>wazero</span>
-          <span>pre-1.0</span>
+        <figcaption>Figure 1 — request path. Extensions execute inside the sandbox boundary; the core never exposes more host surface than a plugin's granted capabilities.</figcaption>
+      </figure>
+
+      <div class="prose cols-3">
+        <div>
+          <h3>Isolation</h3>
+          <p>Fresh Wasm instance per request by default; opt-in instance pooling for pool-safe artifacts. Memory, timeout and concurrency are bounded per plugin.</p>
         </div>
-      </div>
-      <div class="hero-visual reveal" aria-label="Dun request pipeline diagram">
-        <div class="visual-orbit orbit-one"></div><div class="visual-orbit orbit-two"></div>
-        <div class="visual-label">REQUEST PIPELINE <span>LIVE MODEL</span></div>
-        <div class="pipeline-card">
-          <div class="pipeline-node node-client"><span class="node-index">01</span><strong>Client</strong><small>HTTP request</small></div>
-          <div class="pipeline-line"><span></span></div>
-          <div class="pipeline-node node-dun"><span class="node-index">02</span><strong>Dun core</strong><small>Route · policy · proxy</small></div>
-          <div class="pipeline-line"><span></span></div>
-          <div class="pipeline-node node-wasm"><span class="node-index">03</span><strong>Wasm extension</strong><small>Scoped capability</small></div>
-          <div class="pipeline-line"><span></span></div>
-          <div class="pipeline-node node-upstream"><span class="node-index">04</span><strong>Upstream</strong><small>Service response</small></div>
+        <div>
+          <h3>Capabilities</h3>
+          <p>Two-stage enforcement: manifests are checked against deployment policy at load time; ungranted host functions are not exported at instantiation.</p>
         </div>
-        <div class="visual-foot"><span class="pulse"></span> fresh instance per request <span class="divider"></span> reload without restart</div>
-      </div>
-    </section>
-
-    <section class="signal-strip" aria-label="Dun principles">
-      <span>SMALL TRUSTED CORE</span><span>EXPLICIT CAPABILITIES</span><span>MEASURED RUNTIME</span><span>OPEN EXTENSION BOUNDARY</span>
-    </section>
-
-    <section class="section split-section" id="why">
-      <div class="section-heading reveal">
-        <p class="eyebrow">The thesis</p>
-        <h2>Keep the core understandable.<br><em>Move the edge out.</em></h2>
-      </div>
-      <div class="section-body reveal">
-        <p>Gateways become difficult to reason about when every new policy becomes native code. Dun draws a hard line around the data plane and makes the extension boundary explicit.</p>
-        <p>That boundary is built for real operational questions: what can a plugin access, how much memory can it use, what happens when it fails, and how do we reload it without taking traffic down?</p>
-        <a class="text-link" href="#architecture">See the architecture <span aria-hidden="true">→</span></a>
-      </div>
-    </section>
-
-    <section class="section architecture-section" id="architecture">
-      <div class="section-heading reveal">
-        <p class="eyebrow">Architecture / v0</p>
-        <h2>A narrow trusted path.<br><em>A deliberate boundary.</em></h2>
-      </div>
-      <div class="architecture-grid">
-        <article class="feature-card reveal"><span class="card-number">01</span><h3>Native data plane</h3><p>Routing, upstream proxying, configuration and lifecycle stay in Go: fast to inspect, simple to deploy, easy to test.</p><span class="card-tag">GO CORE</span></article>
-        <article class="feature-card feature-card-accent reveal"><span class="card-number">02</span><h3>Capability-scoped Wasm</h3><p>Extensions receive only the host imports granted by policy. Missing capabilities fail at instantiation instead of becoming implicit authority.</p><span class="card-tag">ISOLATED RUNTIME</span></article>
-        <article class="feature-card reveal"><span class="card-number">03</span><h3>Failure is a state</h3><p>Traps, timeouts, cancellations and host-call failures are classified, recorded and contained. The core keeps serving.</p><span class="card-tag">OPERABLE BY DEFAULT</span></article>
-      </div>
-    </section>
-
-    <section class="section gateway-section" id="gateway">
-      <div class="gateway-intro reveal">
-        <p class="eyebrow">A real local gateway</p>
-        <h2>From clone to<br><em>first request.</em></h2>
-        <p>Run the complete example: a Go backend, Dun on the edge, a security-header extension, route policy and Prometheus metrics.</p>
-        <a class="text-link" href="https://github.com/NICE-DEV226/Dun/tree/main/examples/gateway">Open the gateway example <span aria-hidden="true">↗</span></a>
-      </div>
-      <div class="terminal reveal">
-        <div class="terminal-bar"><span class="terminal-dot red"></span><span class="terminal-dot yellow"></span><span class="terminal-dot green"></span><span class="terminal-title">dun-gateway / shell</span></div>
-        <div class="terminal-content">
-          <div><span class="prompt">$</span> go run ./examples/gateway/backend</div>
-          <div class="muted">gateway backend listening on :3000</div>
-          <div><span class="prompt">$</span> go run ./cmd/dun run -config examples/gateway/dun.yaml</div>
-          <div class="muted">plugin loaded · security-header · sha256 verified</div>
-          <div><span class="prompt">$</span> curl -i localhost:8080/api/hello</div>
-          <div class="response"><span>HTTP/1.1 200 OK</span><br>X-Security-Policy: default-src 'self'<br>X-Frame-Options: DENY<br><strong>{ "service": "gateway-backend" }</strong></div>
-          <button class="copy-button" type="button" data-copy="go run ./cmd/dun run -config examples/gateway/dun.yaml">Copy run command <span aria-hidden="true">⧉</span></button>
+        <div>
+          <h3>Failure model</h3>
+          <p>Traps, timeouts, cancellations and host-call errors are classified (<code>trap</code>, <code>timeout</code>, <code>cancelled</code>, …), recorded per plugin, and contained — the core keeps serving.</p>
         </div>
       </div>
     </section>
 
-    <section class="section numbers-section" aria-label="Project verification">
-      <div class="number-block reveal"><strong>v0</strong><span>Core-Wasm contract</span></div>
-      <div class="number-block reveal"><strong>1</strong><span>binary to deploy</span></div>
-      <div class="number-block reveal"><strong>48</strong><span>allocs / benchmark op</span></div>
-      <div class="number-block reveal"><strong>0</strong><span>CGO dependencies</span></div>
+    <section class="section" id="evaluation">
+      <h2><span class="sec-num">3</span>Evaluation</h2>
+      <div class="prose">
+        <p>Pipeline-level benchmarks isolate the extension boundary: the same pipeline machinery runs either a native Go extension or a Wasm-backed one performing identical work (one response-header write). Full methodology in <code>docs/BENCHMARKS.md</code>.</p>
+      </div>
+
+      <figure class="figure">
+        <table class="bench">
+          <thead>
+            <tr><th>extension</th><th class="num">ns/op</th><th class="num">B/op</th><th class="num">allocs/op</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>native go</td><td class="num">~670</td><td class="num">176</td><td class="num">6</td></tr>
+            <tr><td>wasm · pooled (§15.2)</td><td class="num">~33,000</td><td class="num">12,649</td><td class="num">25</td></tr>
+            <tr><td>wasm · per-request (§15.1)</td><td class="num">~100,000</td><td class="num">85,695</td><td class="num">52</td></tr>
+          </tbody>
+        </table>
+        <figcaption>Table 1 — cost per extension invocation. Wasm is ~50–150× native; pooling recovers ~3–4× of that overhead. End-to-end the tax is ~0.3–0.4&nbsp;ms per request, small against real network latency.</figcaption>
+      </figure>
+
+      <div class="prose">
+        <p>Under concurrency (<code>b.RunParallel</code>), pooled instantiation measures ~153µs/op and 68.7KB/op versus ~215µs/op and 144.2KB/op per-request — a ~29% latency and ~52% allocation reduction. Hot reload costs ~2.5ms per swap and is atomic. These numbers motivated RFC-0009: pooling is opt-in, restricted to artifacts whose state can be provably reset.</p>
+        <p class="finding"><strong>Finding.</strong> Wasm buys isolation and language freedom, not speed. For header-scale work it is a defensible trade; for microsecond-critical paths a native extension remains the right boundary. The honest cost is published rather than hidden.</p>
+      </div>
     </section>
 
-    <section class="section community-section">
-      <div class="community-intro reveal">
-        <p class="eyebrow">Open by design</p>
-        <h2>Make the boundary<br><em>better with us.</em></h2>
+    <section class="section" id="reproduce">
+      <h2><span class="sec-num">4</span>Reproduce</h2>
+      <div class="prose">
+        <p>Requirements: Go 1.27+, no cgo, no external services for the tests.</p>
       </div>
-      <div class="community-actions reveal">
-        <p>Dun is early, public and deliberately opinionated. Star the repository to follow the experiment, or bring a real gateway problem to the table.</p>
-        <div class="community-buttons">
-          <a class="button button-primary" href="https://github.com/NICE-DEV226/Dun">☆ Star on GitHub <span aria-hidden="true">↗</span></a>
-          <a class="button button-quiet" href="https://github.com/NICE-DEV226/Dun/blob/main/CONTRIBUTING.md">Read contributing guide <span aria-hidden="true">↗</span></a>
-        </div>
+      <pre class="code"><code>git clone https://github.com/NICE-DEV226/Dun.git
+cd Dun
+
+go test ./...
+go test -race ./...
+go vet ./...
+
+# runnable gateway example (backend :3000, dun :8080)
+go run ./examples/gateway/backend &amp;
+go run ./cmd/dun run -config examples/gateway/dun.yaml
+curl -i localhost:8080/api/hello
+
+# benchmark matrix
+go test ./benchmarks -bench . -benchmem -benchtime=2s</code></pre>
+      <div class="prose">
+        <p>Plugin examples with pre-built artifacts: <code>security-header</code>, <code>deny-header</code>, <code>auth</code>, <code>cors</code> — see <code>docs/EXTENSIONS.md</code>.</p>
       </div>
     </section>
 
-    <section class="section closing-section">
-      <div class="closing-copy reveal"><p class="eyebrow">Build the boundary</p><h2>Infrastructure should be<br><em>powerful enough to extend.</em></h2></div>
-      <div class="closing-actions reveal">
-        <a class="button button-primary" href="https://github.com/NICE-DEV226/Dun">Explore Dun on GitHub <span aria-hidden="true">↗</span></a>
-        <a class="button button-quiet" href="https://github.com/NICE-DEV226/Dun/blob/main/CONTRIBUTING.md">Contribute <span aria-hidden="true">↗</span></a>
+    <section class="section" id="status">
+      <h2><span class="sec-num">5</span>Status &amp; limitations</h2>
+      <div class="prose">
+        <p>Dun is pre-1.0 and experimental. The v0 contract is deliberately small; the following are known gaps, not hidden ones:</p>
+        <ul class="limits">
+          <li>No request/response body API yet — <code>RESPOND</code> cannot emit a body; streaming is future work (RFC-0004).</li>
+          <li>No plugin signature verification or remote registry; artifacts are pinned by SHA-256 only.</li>
+          <li>No load balancing, service discovery or control plane — by design.</li>
+          <li>Proxy-Wasm compatibility is a research question, not an implemented layer.</li>
+          <li>Pooling applies only to artifacts without tables, globals or element segments.</li>
+        </ul>
       </div>
     </section>
+
+    <section class="section" id="citation">
+      <h2><span class="sec-num">6</span>Citation</h2>
+      <pre class="code"><code>@misc{dun2026,
+  title  = {Dun: A Go-native programmable HTTP data plane with a WebAssembly extension boundary},
+  author = {{Dun Project}},
+  year   = {2026},
+  note   = {\url{https://github.com/NICE-DEV226/Dun}},
+  howpublished = {\url{https://github.com/NICE-DEV226/Dun}}
+}</code></pre>
+    </section>
+    </div>
   </main>
 
-  <footer class="site-footer">
-    <span>© 2026 Dun Project</span>
-    <span>Go-native · WebAssembly · Apache-2.0</span>
-    <a href="https://github.com/NICE-DEV226/Dun">github.com/NICE-DEV226/Dun <span aria-hidden="true">↗</span></a>
+  <footer class="colophon">
+    <span>Dun Project · Apache-2.0</span>
+    <span>go · webassembly · research artifact</span>
+    <a href="https://github.com/NICE-DEV226/Dun">github.com/NICE-DEV226/Dun ↗</a>
   </footer>
 </body>
 </html>
