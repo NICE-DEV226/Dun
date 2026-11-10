@@ -1,0 +1,32 @@
+# Deny-header plugin example.
+# The deny-header.wasm guest rejects (403) any request carrying an
+# X-Denied header — a minimal header-based access rule.
+# Run: dun run --config examples/deny-header/dun.yaml
+# Requires an upstream on localhost:3000.
+# Regenerate the artifact with: go run ./cmd/gen-wasm
+listen:
+  address: ":8083"
+
+log:
+  level: info
+  format: text
+
+routes:
+  - name: api
+    match:
+      path_prefix: /api
+    upstream: http://localhost:3000
+    plugins:
+      - deny-header
+
+plugins:
+  - name: deny-header
+    path: plugins/examples/deny-header/deny-header.wasm
+    version: "0.1.0"
+    api: "dun.extension/v1"
+    capabilities:
+      - request.headers.read
+    limits:
+      memory: 64MiB
+      timeout: 5ms
+      instances: 8

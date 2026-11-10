@@ -1,0 +1,32 @@
+# Bearer auth plugin example.
+# The auth.wasm guest rejects any request whose Authorization header is
+# absent or does not start with "Bearer ".
+# Run: dun run --config examples/auth/dun.yaml
+# Requires an upstream on localhost:3000.
+# Regenerate the artifact with: go run ./cmd/gen-wasm
+listen:
+  address: ":8082"
+
+log:
+  level: info
+  format: text
+
+routes:
+  - name: api
+    match:
+      path_prefix: /api
+    upstream: http://localhost:3000
+    plugins:
+      - auth
+
+plugins:
+  - name: auth
+    path: plugins/examples/auth/auth.wasm
+    version: "0.1.0"
+    api: "dun.extension/v1"
+    capabilities:
+      - request.headers.read
+    limits:
+      memory: 64MiB
+      timeout: 5ms
+      instances: 8

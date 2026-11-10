@@ -91,6 +91,23 @@ curl -i http://localhost:8080/api/example
 The plugin adds `X-Security-Policy: default-src 'self'` before the request is
 forwarded to the upstream.
 
+Three more Wasm plugin examples ship pre-built (each needs an upstream on
+`localhost:3000`, run on its own port):
+
+```bash
+# :8082 — rejects requests without "Authorization: Bearer …" (403)
+go run ./cmd/dun run -config examples/auth/dun.yaml
+
+# :8083 — rejects requests carrying an X-Denied header (403)
+go run ./cmd/dun run -config examples/deny-header/dun.yaml
+
+# :8084 — adds three CORS response headers to every response
+go run ./cmd/dun run -config examples/cors/dun.yaml
+```
+
+See [docs/EXTENSIONS.md](docs/EXTENSIONS.md#example-plugins) for what each
+plugin does and which capability it uses.
+
 Validate configuration without starting the data plane:
 
 ```bash

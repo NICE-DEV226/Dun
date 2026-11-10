@@ -1,0 +1,33 @@
+# CORS plugin example.
+# The cors.wasm guest writes three CORS response headers on every request:
+# Access-Control-Allow-Origin/Methods/Headers — three host calls in one
+# invocation.
+# Run: dun run --config examples/cors/dun.yaml
+# Requires an upstream on localhost:3000.
+# Regenerate the artifact with: go run ./cmd/gen-wasm
+listen:
+  address: ":8084"
+
+log:
+  level: info
+  format: text
+
+routes:
+  - name: api
+    match:
+      path_prefix: /api
+    upstream: http://localhost:3000
+    plugins:
+      - cors
+
+plugins:
+  - name: cors
+    path: plugins/examples/cors/cors.wasm
+    version: "0.1.0"
+    api: "dun.extension/v1"
+    capabilities:
+      - response.headers.write
+    limits:
+      memory: 64MiB
+      timeout: 5ms
+      instances: 8

@@ -17,6 +17,7 @@ Reproduce:
 
 ```bash
 go test ./benchmarks -bench . -benchmem -benchtime=2s
+go test ./benchmarks -bench 'Pipeline' -benchmem -benchtime=2s
 go test ./internal/runtime/wazero -bench BenchmarkInvoke -benchmem -benchtime=3s
 ```
 
@@ -88,6 +89,32 @@ instantiation.
   file-watch hot reload, irrelevant to request latency since activation
   is atomic.
 
+## Pipeline-level results (extension boundary only)
+
+These benchmarks run the *same* `pipeline.Pipeline` machinery with a
+single extension that performs the same work (set one response header).
+They isolate the extension dispatch cost from routing, proxying and
+HTTP — the closest pure-Go analogue to a Proxy-Wasm host comparison.
+This is not a Proxy-Wasm benchmark (no Go Proxy-Wasm host exists); it
+measures the "Wasm tax" of Dun's own extension boundary.
+
+| Extension implementation | ns/op | B/op | allocs/op |
+|---|---:|---:|---:|
+| Native Go extension (no Wasm) | ~660–680 | 176 | 6 |
+| Wasm guest, per-request (§15.1) | ~96,000–124,000 | 85,535 | 52 |
+| Wasm guest, pooled §15.2 (max=4) | ~30,500–36,200 | 12,482 | 25 |
+
+Reading:
+
+- The Wasm boundary costs **~150× per-request** and **~50× pooled** vs a
+  native Go extension for trivial work — instantiation, ABI marshalling
+  and host-call overhead dominate at this scale.
+- Pooling recovers ~3–4× of that gap, but a native extension remains
+  orders of magnitude cheaper. This is the expected trade-off: Wasm
+  buys isolation and language freedom, not speed.
+- At E2E level this tax is diluted by proxy/network cost; it matters
+  most for high-RPS, low-latency paths with many plugins.
+
 ## §15.2 decision input: is pooling worth it?
 
 Evidence says **yes for throughput-sensitive deployments, no as a
@@ -113,8 +140,10 @@ RSS under sustained pooled load.
   comparison under contention.
 - Single small guest (one header write); no body-reading or streaming
   plugins exist yet (RFC-0004).
-- No Proxy-Wasm host comparison (no Go Proxy-Wasm host exists to
-  benchmark against).
+- No Proxy-Wasm host comparison — the pipeline-level rows above compare
+  native Go vs Wasm *within Dun*, which is the meaningful comparison
+  for this project; an actual Proxy-Wasm host (Envoy) cannot run in
+  this harness.
 - Latency percentiles are computed over the benchmark loop and printed
   as `p50-ns`/`p95-ns`/`p99-ns` custom metrics; treat sub-run variance
   as noise.

@@ -29,6 +29,7 @@ import (
 	"github.com/NICE-DEV226/Dun/internal/extension"
 	"github.com/NICE-DEV226/Dun/internal/guest"
 	dunhttp "github.com/NICE-DEV226/Dun/internal/http"
+	"github.com/NICE-DEV226/Dun/internal/pipeline"
 	"github.com/NICE-DEV226/Dun/internal/runtime/wazero"
 )
 
@@ -347,6 +348,100 @@ func BenchmarkModuleCompile(b *testing.B) {
 			b.Fatal(err)
 		}
 	}
+}
+
+// --- Pipeline-level benchmarks -----------------------------------------
+//
+// These isolate the extension dispatch cost from HTTP/proxy overhead:
+// the same pipeline machinery runs either a native Go extension or a
+// Wasm-backed HTTPExtension. This is the closest analogue to a
+// Proxy-Wasm host comparison available in pure Go — it measures the
+// "Wasm tax" of the extension boundary itself.
+
+// nativeHeaderExt is a pipeline.Extension implemented in plain Go that
+// performs the same work as the security-header Wasm guest.
+type nativeHeaderExt struct {
+	pipeline.NoopExtension
+}
+
+func (e *nativeHeaderExt) ProcessRequest(_ context.Context, w http.ResponseWriter, _ *http.Request) pipeline.Decision {
+	w.Header().Set("X-Security-Policy", "default-src 'self'")
+	return pipeline.DecisionContinue
+}
+
+// wasmPipeline builds a one-extension pipeline backed by a loaded Wasm
+// module (per-request or pooled depending on instances).
+func wasmPipeline(b *testing.B, instances int) (*pipeline.Pipeline, func()) {
+	b.Helper()
+	rt, err := wazero.NewRuntime(discardLogger)
+	if err != nil {
+		b.Fatal(err)
+	}
+	mgr := extension.NewManager(rt, discardLogger)
+	mgr.SetPolicy("security-header", extension.NewSet("response.headers.write"))
+	mgr.SetLimits("security-header", extension.ResourceLimits{MaxInstances: instances})
+
+	manifest := &extension.Manifest{
+		Name:    "security-header",
+		Version: "0.1.0",
+		API:     "dun.extension/v1",
+		Caps:    extension.Caps{Response: []string{"headers.write"}},
+	}
+	if err := mgr.Load("security-header", manifest, guest.SecurityHeaderModule()); err != nil {
+		b.Fatal(err)
+	}
+	if err := mgr.Activate("security-header"); err != nil {
+		b.Fatal(err)
+	}
+
+	pipe := pipeline.New([]pipeline.Extension{
+		&extension.HTTPExtension{Name_: "security-header", Manager: mgr, Logger: discardLogger},
+	}, discardLogger)
+
+	return pipe, func() {
+		_ = mgr.CloseAll(context.Background())
+		_ = rt.Close(context.Background())
+	}
+}
+
+func benchPipeline(b *testing.B, pipe *pipeline.Pipeline) {
+	b.Helper()
+	req := httptest.NewRequest(http.MethodGet, "/api/x", nil)
+	rec := httptest.NewRecorder()
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		decision, _ := pipe.Execute(req.Context(), rec, req)
+		if decision != pipeline.DecisionContinue {
+			b.Fatalf("unexpected decision %v", decision)
+		}
+	}
+}
+
+// BenchmarkPipelineNativeExtension is the floor: the same header write
+// as an in-process Go extension, no Wasm boundary.
+func BenchmarkPipelineNativeExtension(b *testing.B) {
+	pipe := pipeline.New([]pipeline.Extension{
+		&nativeHeaderExt{NoopExtension: pipeline.NoopExtension{Name_: "native"}},
+	}, discardLogger)
+	benchPipeline(b, pipe)
+}
+
+// BenchmarkPipelineWasmPerRequest runs the security-header guest with
+// per-request instantiation (§15.1).
+func BenchmarkPipelineWasmPerRequest(b *testing.B) {
+	pipe, cleanup := wasmPipeline(b, 0)
+	defer cleanup()
+	benchPipeline(b, pipe)
+}
+
+// BenchmarkPipelineWasmPooled runs the same guest with pooled
+// instantiation (§15.2, max=4).
+func BenchmarkPipelineWasmPooled(b *testing.B) {
+	pipe, cleanup := wasmPipeline(b, 4)
+	defer cleanup()
+	benchPipeline(b, pipe)
 }
 
 // BenchmarkPluginReload measures the atomic hot-reload path (§13):
