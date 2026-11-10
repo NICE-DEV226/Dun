@@ -14,6 +14,14 @@ extern "C" {
         value_ptr: *const u8,
         value_len: u32,
     ) -> u32;
+
+    #[link_name = "request.headers.read"]
+    fn request_headers_read(
+        name_ptr: *const u8,
+        name_len: u32,
+        out_ptr: *mut u8,
+        out_cap: u32,
+    ) -> u32;
 }
 
 /// ABI marker required by the Dun host.
@@ -30,6 +38,28 @@ pub fn write_response_header(name: &[u8], value: &[u8]) -> u32 {
             name.len() as u32,
             value.as_ptr(),
             value.len() as u32,
+        )
+    }
+}
+
+/// Sentinel returned when a request header is absent or the call is
+/// invalid. As an i32 the guest sees -1.
+pub const READ_ABSENT: u32 = u32::MAX;
+
+/// Reads a request header into `buf`, returning the full value length —
+/// retry with a larger buffer when the result exceeds `buf.len()` — or
+/// [`READ_ABSENT`] when the header is absent. A present-but-empty header
+/// returns 0.
+pub fn read_request_header(name: &[u8], buf: &mut [u8]) -> u32 {
+    if buf.is_empty() {
+        return READ_ABSENT;
+    }
+    unsafe {
+        request_headers_read(
+            name.as_ptr(),
+            name.len() as u32,
+            buf.as_mut_ptr(),
+            buf.len() as u32,
         )
     }
 }

@@ -51,6 +51,7 @@ func (d Decision) String() string {
 
 // Capability names are the fully-qualified host permissions understood by v0.
 const (
+	CapabilityRequestHeadersRead   = "request.headers.read"
 	CapabilityResponseHeadersWrite = "response.headers.write"
 	CapabilityLogInfo              = "log.info"
 	CapabilityLogError             = "log.error"
@@ -58,6 +59,7 @@ const (
 
 // HostImport names the v0 host functions.
 const (
+	HostImportRequestHeadersRead   = CapabilityRequestHeadersRead
 	HostImportResponseHeadersWrite = CapabilityResponseHeadersWrite
 	HostImportLogInfo              = CapabilityLogInfo
 	HostImportLogError             = CapabilityLogError

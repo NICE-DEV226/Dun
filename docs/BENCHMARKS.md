@@ -52,6 +52,20 @@ magnitude. Allocations are stable across runs.
 | Module compile+load (plugin startup) | ~1,197,000 | 353,400 | 461 |
 | Plugin hot reload (validate+compile+swap) | ~2,510,000 | 796,100 | 995 |
 
+### Concurrent workload (`-bench Parallel`, `b.RunParallel`)
+
+Parallel rows measure throughput under `GOMAXPROCS` concurrent clients;
+ns/op here is per-request cost under contention, not sequential latency.
+
+| Scenario | ns/op | B/op | allocs/op |
+|---|---:|---:|---:|
+| Dun + 1 Wasm, per-request | ~215,000 | 144,200 | 249 |
+| Dun + 1 Wasm, pooled (max=8) | ~153,000 | 68,700 | 220 |
+
+Under concurrency the pooling win is visible end-to-end: **~29% lower
+per-request cost and ~52% fewer allocated bytes** than per-request
+instantiation.
+
 ## Reading the results
 
 - **Dun core overhead vs native proxy is small** relative to total
@@ -94,7 +108,9 @@ RSS under sustained pooled load.
 
 ## Known limitations of this baseline
 
-- Sequential requests only; no concurrency matrix yet.
+- Sequential requests only for the latency table; a concurrent
+  (`RunParallel`) pair of rows covers the pooled-vs-per-request
+  comparison under contention.
 - Single small guest (one header write); no body-reading or streaming
   plugins exist yet (RFC-0004).
 - No Proxy-Wasm host comparison (no Go Proxy-Wasm host exists to

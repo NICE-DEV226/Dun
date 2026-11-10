@@ -92,7 +92,10 @@ func (r *Runtime) CheckABI(ctx context.Context, artifact []byte) error {
 
 func instantiateHostFunctions(ctx context.Context, runtime wazero.Runtime, logger *slog.Logger) error {
 	builder := runtime.NewHostModuleBuilder(guest.ABIModuleName)
+	// The ABI check exposes every known host function: it verifies the
+	// marker export, not the capability policy (enforced at Load).
 	for _, f := range hostFuncs(extension.NewSet(
+		string(extension.CapRequestHeadersRead),
 		string(extension.CapResponseHeadersWrite),
 		string(extension.CapLogInfo),
 		string(extension.CapLogError),
@@ -331,6 +334,12 @@ func hostFuncs(caps extension.Set, logger *slog.Logger) []hostFunc {
 			fn:   setResponseHeader,
 		})
 	}
+	if caps.Has(extension.CapRequestHeadersRead) {
+		fns = append(fns, hostFunc{
+			name: hostFuncName(extension.CapRequestHeadersRead),
+			fn:   requestHeaderRead,
+		})
+	}
 	if caps.Has(extension.CapLogInfo) {
 		fns = append(fns, hostFunc{
 			name: hostFuncName(extension.CapLogInfo),
@@ -376,6 +385,52 @@ func setResponseHeader(ctx context.Context, mod api.Module, nameOff, nameLen, va
 
 	bridge.SetResponseHeader(string(name), string(value))
 	return 0
+}
+
+// readHeaderAbsent is the sentinel returned by request.headers.read when
+// the header is absent or the call is invalid. As an i32 the guest sees
+// -1 (0xFFFFFFFF).
+const readHeaderAbsent = ^uint32(0)
+
+// requestHeaderRead implements:
+//
+//	request.headers.read(name_off, name_len, out_off, out_cap) -> i32
+//
+// It reads a request header name from guest memory and writes up to
+// out_cap bytes of the header's first value at out_off. The return value
+// is the FULL value length in bytes — if it exceeds out_cap the guest
+// should retry with a larger buffer — or readHeaderAbsent when the header
+// is absent or the call is invalid. A present-but-empty header returns 0.
+func requestHeaderRead(ctx context.Context, mod api.Module, nameOff, nameLen, outOff, outCap uint32) uint32 {
+	bridge, err := currentBridge(ctx)
+	if err != nil {
+		return readHeaderAbsent
+	}
+
+	mem := mod.Memory()
+	if mem == nil {
+		return readHeaderAbsent
+	}
+
+	name, ok := mem.Read(nameOff, nameLen)
+	if !ok {
+		return readHeaderAbsent
+	}
+
+	value, present := bridge.RequestHeaderValue(string(name))
+	if !present {
+		return readHeaderAbsent
+	}
+
+	full := uint32(len(value))
+	written := value
+	if uint64(len(written)) > uint64(outCap) {
+		written = written[:outCap]
+	}
+	if len(written) > 0 && !mem.Write(outOff, []byte(written)) {
+		return readHeaderAbsent
+	}
+	return full
 }
 
 func logInfoHost(logger *slog.Logger) func(context.Context, api.Module, uint32, uint32) {

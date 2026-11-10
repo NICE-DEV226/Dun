@@ -180,6 +180,31 @@ func bench(b *testing.B, srv *httptest.Server, path string, body []byte) {
 	b.ReportMetric(p(0.99), "p99-ns")
 }
 
+// benchParallel drives concurrent requests via b.RunParallel and reports
+// throughput-oriented metrics (ns/op, allocs). Percentiles are omitted:
+// under parallelism they measure scheduler noise more than the data plane.
+func benchParallel(b *testing.B, srv *httptest.Server, path string) {
+	b.Helper()
+	b.ReportAllocs()
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			req, err := http.NewRequest(http.MethodGet, srv.URL+path, nil)
+			if err != nil {
+				b.Error(err)
+				return
+			}
+			resp, err := httpClient.Do(req)
+			if err != nil {
+				b.Error(err)
+				return
+			}
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+		}
+	})
+}
+
 var headerCaps = []string{"response.headers.write"}
 
 func BenchmarkNativeReverseProxy(b *testing.B) {
@@ -223,6 +248,33 @@ func BenchmarkDunOneWasmPooled(b *testing.B) {
 	srv := dunServer(b, up.URL, plugins, []string{"security-header"})
 	defer srv.Close()
 	bench(b, srv, "/api/hello", nil)
+}
+
+func BenchmarkDunOneWasmPerRequestParallel(b *testing.B) {
+	up := backend(b)
+	defer up.Close()
+	plugins := []pluginSpec{{
+		name: "security-header",
+		wasm: guest.SecurityHeaderModule(),
+		caps: headerCaps,
+	}}
+	srv := dunServer(b, up.URL, plugins, []string{"security-header"})
+	defer srv.Close()
+	benchParallel(b, srv, "/api/hello")
+}
+
+func BenchmarkDunOneWasmPooledParallel(b *testing.B) {
+	up := backend(b)
+	defer up.Close()
+	plugins := []pluginSpec{{
+		name:      "security-header",
+		wasm:      guest.SecurityHeaderModule(),
+		caps:      headerCaps,
+		instances: 8,
+	}}
+	srv := dunServer(b, up.URL, plugins, []string{"security-header"})
+	defer srv.Close()
+	benchParallel(b, srv, "/api/hello")
 }
 
 // BenchmarkDunThreeWasm runs three independent plugin instances per

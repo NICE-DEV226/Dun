@@ -172,6 +172,9 @@ type reloadTestBridge struct {
 }
 
 func (t *reloadTestBridge) RequestHeader(string) string { return "" }
+func (t *reloadTestBridge) RequestHeaderValue(string) (string, bool) {
+	return "", false
+}
 func (t *reloadTestBridge) SetResponseHeader(name, value string) {
 	if t.headers == nil {
 		t.headers = make(map[string]string)

@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -114,6 +115,172 @@ func TestE2ESecurityHeaderPlugin(t *testing.T) {
 	defer resp2.Body.Close()
 	if got := resp2.Header.Get("X-Security-Policy"); got != "default-src 'self'" {
 		t.Errorf("second request: expected header, got %q", got)
+	}
+}
+
+// TestE2EHeaderReadPlugin proves the request.headers.read host import
+// end-to-end: the guest rejects requests carrying X-Denied and lets the
+// rest through to the upstream.
+func TestE2EHeaderReadPlugin(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("upstream ok"))
+	}))
+	defer backend.Close()
+
+	tmpDir := t.TempDir()
+	wasmPath := filepath.Join(tmpDir, "header-read.wasm")
+	if err := os.WriteFile(wasmPath, guest.HeaderReadModule(), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &config.Config{
+		Listen: config.ListenConfig{Address: ":0"},
+		Routes: []config.RouteConfig{
+			{
+				Name:     "api",
+				Match:    config.MatchConfig{PathPrefix: "/api"},
+				Upstream: backend.URL,
+				Plugins:  []string{"header-read"},
+			},
+		},
+		Plugins: []config.PluginConfig{
+			{
+				Name:         "header-read",
+				Path:         wasmPath,
+				Version:      "0.1.0",
+				API:          "dun.extension/v1",
+				Capabilities: []string{"request.headers.read"},
+			},
+		},
+		Log: config.LogConfig{Level: "info"},
+	}
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	s, err := dunhttp.New(cfg, dunhttp.WithLogger(logger))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rt, err := wazero.NewRuntime(logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rt.Close(context.Background())
+
+	mgr := extension.NewManager(rt, logger)
+	caps := extension.NewSet("request.headers.read")
+	mgr.SetPolicy("header-read", caps)
+	if err := s.LoadPlugins(context.Background(), mgr); err != nil {
+		t.Fatal("load plugins:", err)
+	}
+
+	ts := httptest.NewServer(s)
+	defer ts.Close()
+
+	// Request without the denied header is proxied.
+	resp, err := http.Get(ts.URL + "/api/ok")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || string(body) != "upstream ok" {
+		t.Fatalf("expected proxied 200 'upstream ok', got %d %q", resp.StatusCode, body)
+	}
+
+	// Request carrying X-Denied is rejected by the guest.
+	req, err := http.NewRequest(http.MethodGet, ts.URL+"/api/denied", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("X-Denied", "true")
+	resp2, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp2.Body.Close()
+	if resp2.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 for denied header, got %d", resp2.StatusCode)
+	}
+}
+
+// TestE2EMetricsExposesPluginStats verifies that /metrics renders the
+// per-plugin operational counters recorded by the extension manager.
+func TestE2EMetricsExposesPluginStats(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("ok"))
+	}))
+	defer backend.Close()
+
+	tmpDir := t.TempDir()
+	wasmPath := filepath.Join(tmpDir, "security-header.wasm")
+	if err := os.WriteFile(wasmPath, guest.SecurityHeaderModule(), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &config.Config{
+		Listen: config.ListenConfig{Address: ":0"},
+		Routes: []config.RouteConfig{{
+			Name:     "api",
+			Match:    config.MatchConfig{PathPrefix: "/api"},
+			Upstream: backend.URL,
+			Plugins:  []string{"security-header"},
+		}},
+		Plugins: []config.PluginConfig{{
+			Name:         "security-header",
+			Path:         wasmPath,
+			Version:      "0.1.0",
+			API:          "dun.extension/v1",
+			Capabilities: []string{"response.headers.write"},
+		}},
+		Log: config.LogConfig{Level: "info"},
+	}
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	s, err := dunhttp.New(cfg, dunhttp.WithLogger(logger))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rt, err := wazero.NewRuntime(logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rt.Close(context.Background())
+
+	mgr := extension.NewManager(rt, logger)
+	mgr.SetPolicy("security-header", extension.NewSet("response.headers.write"))
+	if err := s.LoadPlugins(context.Background(), mgr); err != nil {
+		t.Fatal("load plugins:", err)
+	}
+
+	ts := httptest.NewServer(s)
+	defer ts.Close()
+
+	for i := 0; i < 2; i++ {
+		resp, err := http.Get(ts.URL + "/api/x")
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+	}
+
+	mresp, err := http.Get(ts.URL + "/metrics")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mresp.Body.Close()
+	mbody, _ := io.ReadAll(mresp.Body)
+	metrics := string(mbody)
+
+	for _, want := range []string{
+		`dun_plugin_invocations_total{plugin="security-header"} 2`,
+		`dun_plugin_duration_seconds_count{plugin="security-header"} 2`,
+		`dun_plugin_reloads_total{plugin="security-header"} 0`,
+	} {
+		if !strings.Contains(metrics, want) {
+			t.Errorf("metrics missing %q\nfull output:\n%s", want, metrics)
+		}
 	}
 }
 

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
+	"time"
 )
 
 // Manager owns the lifecycle of all loaded extensions.
@@ -19,6 +21,10 @@ type Manager struct {
 	byName    map[string]*entry
 	telemetry map[string]*failureCounters
 	supported map[string]bool
+
+	invocations map[string]*atomic.Uint64
+	durations   map[string]*atomic.Uint64 // total invoke time, nanoseconds
+	reloads     map[string]*atomic.Uint64
 }
 
 type entry struct {
@@ -53,6 +59,9 @@ func NewManager(host Host, logger *slog.Logger) *Manager {
 		supported: map[string]bool{
 			"wasm": true,
 		},
+		invocations: make(map[string]*atomic.Uint64),
+		durations:   make(map[string]*atomic.Uint64),
+		reloads:     make(map[string]*atomic.Uint64),
 	}
 }
 
@@ -157,6 +166,11 @@ func (m *Manager) Load(name string, manifest *Manifest, artifact []byte) error {
 	}
 	if _, ok := m.telemetry[name]; !ok {
 		m.telemetry[name] = &failureCounters{byKind: make(map[FailureKind]uint64)}
+	}
+	if _, ok := m.invocations[name]; !ok {
+		m.invocations[name] = &atomic.Uint64{}
+		m.durations[name] = &atomic.Uint64{}
+		m.reloads[name] = &atomic.Uint64{}
 	}
 
 	m.logger.Info("extension loaded", "extension", name, "version", manifest.Version)
@@ -269,6 +283,9 @@ func (m *Manager) Reload(name string, newArtifact []byte, newManifest *Manifest)
 		"extension", name,
 		"version", newManifest.Version,
 	)
+	if c, ok := m.reloads[name]; ok {
+		c.Add(1)
+	}
 	return nil
 }
 
@@ -328,7 +345,17 @@ func (m *Manager) Invoke(ctx context.Context, name, operation string, args []byt
 		return Result{}, fmt.Errorf("extension %q not serving (state=%s)", name, e.liveness.State())
 	}
 
+	m.mu.RLock()
+	inv, dur := m.invocations[name], m.durations[name]
+	m.mu.RUnlock()
+	if inv != nil {
+		inv.Add(1)
+	}
+	start := time.Now()
 	res, err := e.module.Invoke(ctx, Call{Operation: operation, Args: args, Bridge: bridge})
+	if dur != nil {
+		dur.Add(uint64(time.Since(start)))
+	}
 	if err == nil {
 		return res, nil
 	}
@@ -394,6 +421,36 @@ func (m *Manager) Failures(name string) FailureStats {
 	out.Last = f.last
 	for k, v := range f.byKind {
 		out.ByName[k] = v
+	}
+	return out
+}
+
+// PluginStats summarizes a plugin's operational counters for metrics
+// exposition (/metrics).
+type PluginStats struct {
+	Invocations uint64
+	DurationNs  uint64 // cumulative invoke time
+	Reloads     uint64
+	Failures    FailureStats
+}
+
+// Stats returns the recorded counters for a named extension.
+func (m *Manager) Stats(name string) PluginStats {
+	m.mu.RLock()
+	inv, hasInv := m.invocations[name]
+	dur := m.durations[name]
+	rel := m.reloads[name]
+	m.mu.RUnlock()
+
+	out := PluginStats{Failures: m.Failures(name)}
+	if hasInv {
+		out.Invocations = inv.Load()
+	}
+	if dur != nil {
+		out.DurationNs = dur.Load()
+	}
+	if rel != nil {
+		out.Reloads = rel.Load()
 	}
 	return out
 }

@@ -37,6 +37,14 @@ func (b *httpBridge) RequestHeader(name string) string {
 	return b.req.Header.Get(name)
 }
 
+func (b *httpBridge) RequestHeaderValue(name string) (string, bool) {
+	values := b.req.Header.Values(name)
+	if len(values) == 0 {
+		return "", false
+	}
+	return values[0], true
+}
+
 func (b *httpBridge) SetResponseHeader(name, value string) {
 	b.headers.Set(name, value)
 }

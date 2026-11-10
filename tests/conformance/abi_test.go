@@ -51,6 +51,9 @@ type bridge struct {
 }
 
 func (b *bridge) RequestHeader(string) string { return "" }
+func (b *bridge) RequestHeaderValue(string) (string, bool) {
+	return "", false
+}
 func (b *bridge) SetResponseHeader(name, value string) {
 	if b.headers == nil {
 		b.headers = make(map[string]string)

@@ -52,6 +52,10 @@ func DecisionString(code uint32) string {
 type HTTPBridge interface {
 	// RequestHeader reads a request header value.
 	RequestHeader(name string) string
+	// RequestHeaderValue returns the first value of a request header and
+	// whether the header is present at all (an empty value still counts
+	// as present).
+	RequestHeaderValue(name string) (string, bool)
 	// SetResponseHeader sets a header on the eventual response.
 	SetResponseHeader(name, value string)
 	// Log emits a structured log line from the extension.

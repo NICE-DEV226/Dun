@@ -19,9 +19,18 @@ Decision codes: 0=CONTINUE, 1=RESPOND, 2=REJECT, 3=ERROR
 
 | Import name              | Signature                                    | Capability               |
 |--------------------------|----------------------------------------------|--------------------------|
+| `request.headers.read`   | `(name_off:i32, name_len:i32, out_off:i32, out_cap:i32) -> i32` | `request.headers.read` |
 | `response.headers.write` | `(name_off:i32, name_len:i32, val_off:i32, val_len:i32) -> errno:i32` | `response.headers.write` |
 | `log.info`               | `(msg_off:i32, msg_len:i32) -> ()`           | `log.info`               |
 | `log.error`              | `(msg_off:i32, msg_len:i32) -> ()`           | `log.error`              |
+
+### `request.headers.read` semantics
+
+The host writes up to `out_cap` bytes of the header's first value at
+`out_off` in guest memory and returns the **full** value length — if it
+exceeds `out_cap`, the guest should retry with a larger buffer. The
+return is `-1` (`0xFFFFFFFF`) when the header is absent or the call is
+invalid; a present-but-empty header returns `0`.
 
 ## String passing
 
@@ -148,6 +157,14 @@ Plugin binaries can be swapped without restarting the data plane:
 # changing security-header.wasm on disk is picked up automatically;
 # new requests then run the new version's code.
 ```
+
+## Observability
+
+`GET /metrics` exposes Prometheus text exposition: core request counters
+plus per-plugin operational stats labeled by `plugin` —
+`dun_plugin_invocations_total`, `dun_plugin_duration_seconds_{sum,count}`,
+`dun_plugin_errors_total{kind=...}` (trap/timeout/cancelled/instantiate/
+host_call/unknown) and `dun_plugin_reloads_total`.
 
 ## Writing real plugins
 

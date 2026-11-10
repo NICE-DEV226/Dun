@@ -295,7 +295,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 	if req.URL.Path == "/metrics" {
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
-		_, _ = w.Write([]byte(s.metrics.Prometheus()))
+		_, _ = w.Write([]byte(s.metricsText()))
 		return
 	}
 
@@ -446,6 +446,29 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 		defer cancel()
 		return s.server.Shutdown(shutdownCtx)
 	}
+}
+
+// metricsText renders the Prometheus exposition: the core registry plus
+// per-plugin operational counters recorded by the extension manager
+// (RFC-0000 §14 telemetry made scrapable).
+func (s *Server) metricsText() string {
+	var b strings.Builder
+	b.WriteString(s.metrics.Prometheus())
+	if s.mgr == nil {
+		return b.String()
+	}
+	for _, name := range s.mgr.List() {
+		st := s.mgr.Stats(name)
+		plugin := fmt.Sprintf("%q", name)
+		fmt.Fprintf(&b, "dun_plugin_invocations_total{plugin=%s} %d\n", plugin, st.Invocations)
+		fmt.Fprintf(&b, "dun_plugin_duration_seconds_sum{plugin=%s} %g\n", plugin, float64(st.DurationNs)/1e9)
+		fmt.Fprintf(&b, "dun_plugin_duration_seconds_count{plugin=%s} %d\n", plugin, st.Invocations)
+		fmt.Fprintf(&b, "dun_plugin_reloads_total{plugin=%s} %d\n", plugin, st.Reloads)
+		for kind, n := range st.Failures.ByName {
+			fmt.Fprintf(&b, "dun_plugin_errors_total{plugin=%s,kind=%q} %d\n", plugin, kind.String(), n)
+		}
+	}
+	return b.String()
 }
 
 // Metrics returns the server's metrics registry.

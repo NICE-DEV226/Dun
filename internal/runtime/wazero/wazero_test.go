@@ -44,11 +44,17 @@ func buildWithoutMarker(t *testing.T) []byte {
 }
 
 type testBridge struct {
-	headers map[string]string
-	msgs    []string
+	headers    map[string]string
+	reqHeaders map[string]string
+	msgs       []string
 }
 
 func (t *testBridge) RequestHeader(name string) string { return "" }
+
+func (t *testBridge) RequestHeaderValue(name string) (string, bool) {
+	v, ok := t.reqHeaders[name]
+	return v, ok
+}
 func (t *testBridge) SetResponseHeader(name, value string) {
 	if t.headers == nil {
 		t.headers = make(map[string]string)
