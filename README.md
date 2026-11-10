@@ -268,6 +268,33 @@ On the development machine used for the current baseline it measures roughly
 `33 us/op`, `48 allocs/op` for the small security-header guest. Benchmark
 results depend on Go, wazero, CPU, operating system and build configuration.
 
+## What Does Wasm Cost?
+
+Pipeline-level measurement of one extension invocation doing the same work
+in each case: set a single response header. Full methodology and end-to-end
+numbers in [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
+
+```text
+cost per extension invocation (1 char ≈ 2 µs)
+
+                 0           25          50           75          100 µs
+                 │            │           │            │           │
+native Go        ▍                                                   0.7 µs · 176 B · 6 allocs
+wasm pooled      ████████████████▌                                   ~33 µs · 12.5 KB · 25 allocs
+wasm per-request ██████████████████████████████████████████████████  ~100 µs · 85 KB · 52 allocs
+```
+
+- **Native Go is ~50–150× cheaper** — no sandbox, no ABI marshalling.
+  Expected: Wasm buys isolation, not speed.
+- **Pooling recovers ~3×** of the Wasm overhead; per-request instantiation
+  dominates the pooled path.
+- **End-to-end the tax is ~0.3–0.4 ms per request** — small next to real
+  network latency, which is why Proxy-Wasm-style extensions are viable
+  in production proxies.
+- **What the premium buys:** memory isolation (a trapped guest returns a
+  clean 500, the core keeps serving), any Wasm-compilable language, hot
+  reload without restart, and capability-scoped host access.
+
 ## Architecture
 
 The trusted path is intentionally small:
