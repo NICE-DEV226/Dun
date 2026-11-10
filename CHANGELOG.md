@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 The next release will focus on external plugin authoring, CI hardening and
 operational observability.
 
-## [0.1.0] - 2026-09-16
+## [0.1.0] - 2026-11-10
 
 ### Added
 - Public Core-Wasm v0 contract and conformance tests
@@ -20,6 +20,14 @@ operational observability.
 - Optional SHA-256 plugin artifact verification
 - GitHub Actions checks for Go, Rust and ABI conformance
 - Reproducible Wasm invocation benchmark
+- Opt-in Wasm instance pooling (§15.2) for pool-safe artifacts, with
+  memory-snapshot reset and automatic per-request fallback
+- `request.headers.read` capability-gated host function
+- Per-plugin operational metrics (`dun_plugin_*`) on `/metrics`
+- Example plugins with pre-built artifacts: `security-header`,
+  `deny-header`, `auth`, `cors`
+- Benchmark Lab: end-to-end and pipeline-level benchmark matrix
+- Research-style project page under `web/`
 
 ### Security
 - Per-request Wasm instance isolation
