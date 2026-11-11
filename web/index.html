@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="Dun — a Go-native programmable HTTP data plane with a WebAssembly extension boundary. Research project page.">
+  <meta name="description" content="Dun — a Go-native programmable HTTP data plane with a WebAssembly extension boundary. Research project.">
   <title>Dun — A Go-native programmable HTTP data plane</title>
   <link rel="icon" href="assets/logo.jpeg" type="image/jpeg">
   <link rel="stylesheet" href="styles.css">
@@ -11,108 +11,140 @@
 <body>
   <a class="skip-link" href="#main">Skip to content</a>
 
-  <header class="masthead">
-    <a class="brand" href="#top">
-      <img src="assets/logo.jpeg" alt="" width="34" height="34">
-      <span>DUN</span>
-    </a>
-    <nav class="masthead-links" aria-label="Project links">
-      <a href="https://github.com/NICE-DEV226/Dun">source</a>
-      <a href="https://github.com/NICE-DEV226/Dun/blob/main/Dun_Project_Architecture_Specification_v0_2.md">specification</a>
-      <a href="https://github.com/NICE-DEV226/Dun/tree/main/rfcs">rfcs</a>
-      <a href="https://github.com/NICE-DEV226/Dun">github ↗</a>
-    </nav>
+  <header class="site-header">
+    <div class="container header-inner">
+      <a class="brand" href="#top">
+        <img src="assets/logo.jpeg" alt="" width="30" height="30">
+        <span>DUN</span>
+      </a>
+      <nav class="nav" aria-label="Project links">
+        <a href="https://github.com/NICE-DEV226/Dun">GitHub</a>
+        <a href="https://github.com/NICE-DEV226/Dun/blob/main/Dun_Project_Architecture_Specification_v0_2.md">Specification</a>
+        <a href="https://github.com/NICE-DEV226/Dun/tree/main/rfcs">RFCs</a>
+        <a class="nav-github" href="https://github.com/NICE-DEV226/Dun/releases/tag/v0.1.0">v0.1.0</a>
+      </nav>
+    </div>
   </header>
 
-  <main id="main" class="paper">
-    <header class="title-block" id="top">
-      <p class="kicker">research project · systems · go · webassembly</p>
-      <h1>Dun</h1>
-      <p class="subtitle">A Go-native programmable HTTP data plane<br>with a WebAssembly extension boundary.</p>
-      <ul class="badges" aria-label="Project facts">
-        <li>go 1.27+</li>
-        <li>wazero</li>
-        <li>apache-2.0</li>
-        <li>pre-1.0</li>
-        <li>~6k loc</li>
-      </ul>
-    </header>
+  <main id="main">
+    <section class="hero" id="top">
+      <div class="container">
+        <h1>A programmable HTTP data plane,<br>written in Go.</h1>
+        <p class="lede">Dun routes and proxies HTTP traffic through a small trusted Go core. Application-specific behavior runs in capability-scoped WebAssembly extensions — sandboxed, limited, and reloadable without taking traffic down.</p>
+        <div class="actions">
+          <a class="button" href="#reproduce">Run the gateway</a>
+          <a class="button secondary" href="https://github.com/NICE-DEV226/Dun">Source on GitHub</a>
+        </div>
+        <div class="code-block hero-command">
+          <div class="code-header"><span>dun-gateway / shell</span></div>
+          <pre><code>go run ./examples/gateway/backend &amp;
+go run ./cmd/dun run -config examples/gateway/dun.yaml
+curl -i localhost:8080/api/hello</code></pre>
+        </div>
+      </div>
+    </section>
 
-    <div class="sheet">
-    <section class="section" id="abstract">
-      <h2><span class="sec-num">1</span>Abstract</h2>
-      <div class="prose">
-        <p>Dun explores whether a production-shaped HTTP data plane can stay small and auditable while delegating application-specific behavior to sandboxed WebAssembly extensions. The trusted core owns routing, proxying, configuration and lifecycle; extensions run under an explicit capability model with per-request isolation, resource limits and classified failure telemetry. This page summarizes the architecture, the extension contract, and measured costs — including where Wasm is, and is not, a good boundary for HTTP infrastructure.</p>
+    <section class="section" id="how">
+      <div class="container">
+        <div class="section-heading">
+          <h2>How it works</h2>
+          <p>Three moving parts: a YAML description of routes and plugins, a trusted Go data plane, and Wasm guests that only see the host functions they were granted.</p>
+        </div>
+        <ol class="steps">
+          <li>
+            <span class="step-num">01</span>
+            <div>
+              <h3>Declare routes and plugins</h3>
+              <p>One <code>dun.yaml</code> describes listeners, route matching, upstreams and plugin artifacts with their capabilities and resource limits.</p>
+            </div>
+          </li>
+          <li>
+            <span class="step-num">02</span>
+            <div>
+              <h3>Requests cross the sandbox boundary</h3>
+              <p>Each plugin runs inside its own Wasm instance per request — or a bounded pool for artifacts proven safe to reset. Decisions (<code>continue</code>, <code>respond</code>, <code>reject</code>, <code>error</code>) are explicit integers.</p>
+            </div>
+          </li>
+          <li>
+            <span class="step-num">03</span>
+            <div>
+              <h3>Observe and reload</h3>
+              <p><code>/healthz</code>, <code>/readyz</code> and Prometheus <code>/metrics</code> report core and per-plugin health. Plugin binaries hot-reload atomically: compile first, swap second, drain nothing.</p>
+            </div>
+          </li>
+        </ol>
       </div>
     </section>
 
     <section class="section" id="architecture">
-      <h2><span class="sec-num">2</span>Architecture</h2>
-      <div class="prose">
-        <p>Every request traverses a narrow trusted path. Plugins are consulted in order, each inside its own sandbox; decisions (<code>continue</code>, <code>respond</code>, <code>reject</code>, <code>error</code>) are explicit integers, not conventions.</p>
-      </div>
+      <div class="container">
+        <div class="section-heading">
+          <h2>Architecture</h2>
+          <p>A narrow trusted path. The extension boundary is explicit: capabilities are granted per plugin, enforced twice — at load time against deployment policy, and at instantiation by simply not exporting ungranted host functions.</p>
+        </div>
 
-      <figure class="figure">
-        <div class="pipeline">
-          <div class="p-node"><span class="p-idx">01</span><div><strong>client</strong><small>http request</small></div></div>
-          <div class="p-link"><span></span></div>
-          <div class="p-node p-dun"><span class="p-idx">02</span><div><strong>dun core</strong><small>route · policy · proxy</small></div></div>
-          <div class="p-link"><span></span></div>
-          <div class="p-node p-wasm"><span class="p-idx">03</span><div><strong>wasm extension</strong><small>capability-scoped</small></div></div>
-          <div class="p-link"><span></span></div>
-          <div class="p-node"><span class="p-idx">04</span><div><strong>upstream</strong><small>service response</small></div></div>
-        </div>
-        <figcaption>Figure 1 — request path. Extensions execute inside the sandbox boundary; the core never exposes more host surface than a plugin's granted capabilities.</figcaption>
-      </figure>
+        <figure class="figure">
+          <div class="pipeline">
+            <div class="p-node"><span class="p-idx">01</span><div><strong>client</strong><small>http request</small></div></div>
+            <div class="p-link"><span></span></div>
+            <div class="p-node p-dun"><span class="p-idx">02</span><div><strong>dun core</strong><small>route · policy · proxy</small></div></div>
+            <div class="p-link"><span></span></div>
+            <div class="p-node p-wasm"><span class="p-idx">03</span><div><strong>wasm extension</strong><small>capability-scoped</small></div></div>
+            <div class="p-link"><span></span></div>
+            <div class="p-node"><span class="p-idx">04</span><div><strong>upstream</strong><small>service response</small></div></div>
+          </div>
+          <figcaption>Figure 1 — request path. The core never exposes more host surface than a plugin's granted capabilities.</figcaption>
+        </figure>
 
-      <div class="prose cols-3">
-        <div>
-          <h3>Isolation</h3>
-          <p>Fresh Wasm instance per request by default; opt-in instance pooling for pool-safe artifacts. Memory, timeout and concurrency are bounded per plugin.</p>
-        </div>
-        <div>
-          <h3>Capabilities</h3>
-          <p>Two-stage enforcement: manifests are checked against deployment policy at load time; ungranted host functions are not exported at instantiation.</p>
-        </div>
-        <div>
-          <h3>Failure model</h3>
-          <p>Traps, timeouts, cancellations and host-call errors are classified (<code>trap</code>, <code>timeout</code>, <code>cancelled</code>, …), recorded per plugin, and contained — the core keeps serving.</p>
+        <div class="cols-3">
+          <div>
+            <h3>Isolation</h3>
+            <p>Fresh Wasm instance per request by default; opt-in pooling for artifacts whose state can be provably reset. Memory, timeout and concurrency are bounded per plugin.</p>
+          </div>
+          <div>
+            <h3>Capabilities</h3>
+            <p>Two-stage enforcement: manifests checked against deployment policy at load; ungranted host functions absent at instantiation.</p>
+          </div>
+          <div>
+            <h3>Failure model</h3>
+            <p>Traps, timeouts, cancellations and host-call errors are classified (<code>trap</code>, <code>timeout</code>, <code>cancelled</code>, …), recorded per plugin, contained — the core keeps serving.</p>
+          </div>
         </div>
       </div>
     </section>
 
     <section class="section" id="evaluation">
-      <h2><span class="sec-num">3</span>Evaluation</h2>
-      <div class="prose">
-        <p>Pipeline-level benchmarks isolate the extension boundary: the same pipeline machinery runs either a native Go extension or a Wasm-backed one performing identical work (one response-header write). Full methodology in <code>docs/BENCHMARKS.md</code>.</p>
-      </div>
+      <div class="container">
+        <div class="section-heading">
+          <h2>Evaluation</h2>
+          <p>Pipeline-level benchmarks isolate the extension boundary: the same machinery runs a native Go extension or a Wasm-backed one performing identical work — one response-header write. Methodology in <code>docs/BENCHMARKS.md</code>.</p>
+        </div>
 
-      <figure class="figure">
         <table class="bench">
           <thead>
             <tr><th>extension</th><th class="num">ns/op</th><th class="num">B/op</th><th class="num">allocs/op</th></tr>
           </thead>
           <tbody>
             <tr><td>native go</td><td class="num">~670</td><td class="num">176</td><td class="num">6</td></tr>
-            <tr><td>wasm · pooled (§15.2)</td><td class="num">~33,000</td><td class="num">12,649</td><td class="num">25</td></tr>
-            <tr><td>wasm · per-request (§15.1)</td><td class="num">~100,000</td><td class="num">85,695</td><td class="num">52</td></tr>
+            <tr><td>wasm · pooled</td><td class="num">~33,000</td><td class="num">12,649</td><td class="num">25</td></tr>
+            <tr><td>wasm · per-request</td><td class="num">~100,000</td><td class="num">85,695</td><td class="num">52</td></tr>
           </tbody>
         </table>
-        <figcaption>Table 1 — cost per extension invocation. Wasm is ~50–150× native; pooling recovers ~3–4× of that overhead. End-to-end the tax is ~0.3–0.4&nbsp;ms per request, small against real network latency.</figcaption>
-      </figure>
+        <p class="table-note">Table 1 — cost per extension invocation. Wasm is ~50–150× native; pooling recovers ~3–4× of that. End-to-end the tax is ~0.3–0.4&nbsp;ms per request — small against real network latency. Under concurrency, pooled instantiation measures ~153µs/op vs ~215µs/op per-request.</p>
 
-      <div class="prose">
-        <p>Under concurrency (<code>b.RunParallel</code>), pooled instantiation measures ~153µs/op and 68.7KB/op versus ~215µs/op and 144.2KB/op per-request — a ~29% latency and ~52% allocation reduction. Hot reload costs ~2.5ms per swap and is atomic. These numbers motivated RFC-0009: pooling is opt-in, restricted to artifacts whose state can be provably reset.</p>
         <p class="finding"><strong>Finding.</strong> Wasm buys isolation and language freedom, not speed. For header-scale work it is a defensible trade; for microsecond-critical paths a native extension remains the right boundary. The honest cost is published rather than hidden.</p>
       </div>
     </section>
 
     <section class="section" id="reproduce">
-      <h2><span class="sec-num">4</span>Reproduce</h2>
-      <div class="prose">
-        <p>Requirements: Go 1.27+, no cgo, no external services for the tests.</p>
-      </div>
-      <pre class="code"><code>git clone https://github.com/NICE-DEV226/Dun.git
+      <div class="container">
+        <div class="section-heading">
+          <h2>Reproduce</h2>
+          <p>Requirements: Go 1.27+, no cgo, no external services for the tests.</p>
+        </div>
+        <div class="code-block">
+          <div class="code-header"><span>shell</span></div>
+          <pre><code>git clone https://github.com/NICE-DEV226/Dun.git
 cd Dun
 
 go test ./...
@@ -126,15 +158,17 @@ curl -i localhost:8080/api/hello
 
 # benchmark matrix
 go test ./benchmarks -bench . -benchmem -benchtime=2s</code></pre>
-      <div class="prose">
+        </div>
         <p>Plugin examples with pre-built artifacts: <code>security-header</code>, <code>deny-header</code>, <code>auth</code>, <code>cors</code> — see <code>docs/EXTENSIONS.md</code>.</p>
       </div>
     </section>
 
     <section class="section" id="status">
-      <h2><span class="sec-num">5</span>Status &amp; limitations</h2>
-      <div class="prose">
-        <p>Dun is pre-1.0 and experimental. The v0 contract is deliberately small; the following are known gaps, not hidden ones:</p>
+      <div class="container">
+        <div class="section-heading">
+          <h2>Status &amp; limitations</h2>
+          <p>Dun is pre-1.0 and experimental. The v0 contract is deliberately small; the following are known gaps, not hidden ones.</p>
+        </div>
         <ul class="limits">
           <li>No request/response body API yet — <code>RESPOND</code> cannot emit a body; streaming is future work (RFC-0004).</li>
           <li>No plugin signature verification or remote registry; artifacts are pinned by SHA-256 only.</li>
@@ -142,26 +176,20 @@ go test ./benchmarks -bench . -benchmem -benchtime=2s</code></pre>
           <li>Proxy-Wasm compatibility is a research question, not an implemented layer.</li>
           <li>Pooling applies only to artifacts without tables, globals or element segments.</li>
         </ul>
+        <p class="citation">Cite as: <code>@misc{dun2026, title = {Dun: A Go-native programmable HTTP data plane with a WebAssembly extension boundary}, year = {2026}, howpublished = {\url{https://github.com/NICE-DEV226/Dun}} }</code></p>
       </div>
     </section>
-
-    <section class="section" id="citation">
-      <h2><span class="sec-num">6</span>Citation</h2>
-      <pre class="code"><code>@misc{dun2026,
-  title  = {Dun: A Go-native programmable HTTP data plane with a WebAssembly extension boundary},
-  author = {{Dun Project}},
-  year   = {2026},
-  note   = {\url{https://github.com/NICE-DEV226/Dun}},
-  howpublished = {\url{https://github.com/NICE-DEV226/Dun}}
-}</code></pre>
-    </section>
-    </div>
   </main>
 
-  <footer class="colophon">
-    <span>Dun Project · Apache-2.0</span>
-    <span>go · webassembly · research artifact</span>
-    <a href="https://github.com/NICE-DEV226/Dun">github.com/NICE-DEV226/Dun ↗</a>
+  <footer class="site-footer">
+    <div class="container footer-inner">
+      <p>Dun Project · Apache-2.0</p>
+      <div class="footer-links">
+        <a href="https://github.com/NICE-DEV226/Dun">GitHub</a>
+        <a href="https://github.com/NICE-DEV226/Dun/blob/main/CHANGELOG.md">Changelog</a>
+        <a href="https://github.com/NICE-DEV226/Dun/blob/main/CONTRIBUTING.md">Contributing</a>
+      </div>
+    </div>
   </footer>
 </body>
 </html>
